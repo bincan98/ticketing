@@ -149,7 +149,7 @@
     constructor(run) {
       this.run = JSON.parse(JSON.stringify(run));
       this.profile = this.run.profile; this.settings = this.profile.settings;
-      this.active = true; this.claimed = false; this.observers = []; this.guardNodes = [];
+      this.active = true; this.claimed = false; this.observers = []; this.verificationObservers=[]; this.guardNodes = [];
       this.scope = null; this.target = null; this.timers = new Set(); this.pollTimer = null;
       this.run.logs ||= []; this.run.cycle = 1; this.run.stepIndex = 0;
       this.initialUrl = location.href;
@@ -158,9 +158,15 @@
       const entry = {timestamp: Date.now(), monotonicMs: performance.now(), time: new Date().toISOString(),
         event, message, type, runId: this.run.id, cycle: this.run.cycle, stepIndex: this.run.stepIndex, ...extra};
       this.run.logs.push(entry); this.run.logs = this.run.logs.slice(-500);
-      // Console output is diagnostic work; keep it outside the synchronous click path.
-      queueMicrotask(() => console.log(`[Ticket Click][${entry.time}][${event}] ${message}`, extra));
+      (this.consoleEntries ||= []).push([entry,extra]);
+      if(!this.consoleFlushQueued){this.consoleFlushQueued=true;queueMicrotask(()=>{
+        this.consoleFlushQueued=false;if(this.phase!=='dispatching')this.flushConsole();
+      });}
       return entry;
+    }
+    flushConsole() {
+      for(const [entry,extra] of this.consoleEntries||[])console.log(`[Ticket Click][${entry.time}][${entry.event}] ${entry.message}`,extra);
+      this.consoleEntries=[];
     }
     persist({input = false} = {}) {
       // Keep the durable input gate, but do not serialize/rewrite history before
@@ -179,6 +185,8 @@
       this.pendingCheckpoint=ordinary?checkpoint:null;
       saving = saving.catch(() => {}).then(async () => {
         if(this.pendingCheckpoint===checkpoint)this.pendingCheckpoint=null;
+        if(checkpoint.promoted)return;
+        checkpoint.started=true;
         const snapshot=checkpoint.snapshot;
         const {macroRun: current} = await chrome.storage.local.get('macroRun');
         if (!current || current.id !== snapshot.id || (!ACTIVE.includes(current.status) && ACTIVE.includes(snapshot.status))) return;
@@ -419,15 +427,20 @@
     disconnect() {
       this.removeVisualListeners();
       for (const observer of this.observers) observer.disconnect();
+      this.disconnectVerification();
       this.observers = []; this.guardNodes = []; this.scope = null; this.target = null;
       if (this.pollTimer) { clearTimeout(this.pollTimer); this.timers.delete(this.pollTimer); this.pollTimer = null; }
     }
-    observe(root, options, callback) {
+    disconnectVerification() {
+      for(const observer of this.verificationObservers||[])observer.disconnect();
+      this.verificationObservers=[];this.verificationPrepared=false;
+    }
+    observe(root, options, callback, role='watch') {
       if (!root) return;
       const observer = new MutationObserver(records => {
-        if (this.active) this.safe(() => callback(records));
+        if (this.active && (role==='verify'||this.phase==='watching')) this.safe(() => callback(records));
       });
-      observer.observe(root, options); this.observers.push(observer);
+      observer.observe(root, options);(role==='verify'?(this.verificationObservers ||= []):this.observers).push(observer);
     }
     stopForBlocker() {
       for (const selector of [...this.profile.safetySelectors, GENERIC_BLOCKERS]) {
@@ -437,14 +450,14 @@
       }
       return false;
     }
-    bindGuards(callback) {
+    bindGuards(callback,role='watch') {
       for (const selector of [...this.profile.safetySelectors, GENERIC_BLOCKERS]) {
         for (const node of findAll(selector)) {
-          this.guardNodes.push(node);
+          if(role==='watch')this.guardNodes.push(node);
           // Covers hidden ancestors too, without broad attribute subtree scanning.
           for (let parent = node; parent?.nodeType === 1 && parent !== this.scope; parent = parentOf(parent)) {
             if (this.scope && contains(this.scope,parent)) break;
-            this.observe(parent, {attributes: true, attributeFilter: ATTRS}, callback);
+            this.observe(parent, {attributes: true, attributeFilter: ATTRS}, callback,role);
           }
         }
       }
@@ -485,15 +498,23 @@
       }
       this.scope = scope;
       this.observe(scope, {childList: true, subtree: true, attributes: true, attributeFilter, characterData: !!(this.step.targetText || this.step.buttonText)}, records => {
+        const structural=records.some(r=>r.type==='childList'&&[...r.addedNodes,...r.removedNodes].some(n=>n instanceof Element));
+        if(structural)this.verificationPrepared=false;
         // Ignore clock/log subtree text churn while the cached target is stable.
         const relevant = !!this.step.targetText || !this.target?.isConnected || records.some(r => r.type === 'attributes' || r.type === 'characterData' ||
           r.target === scope || r.target.contains(this.target) || this.target.contains(r.target) ||
           this.guardNodes.some(n => n === r.target || n.contains(r.target) || r.target.contains(n)) ||
           [...r.addedNodes].some(n => n instanceof Element));
         if (relevant) this.evaluate('mutation');
+        if(structural&&this.active&&this.phase==='watching')this.installVerification();
       });
       // Detect removal/replacement of scope, and CSS/disabled changes on ancestors.
-      for (const root of shadowRoots(scope)) this.observe(root, {childList:true,subtree:true,attributes:true,attributeFilter,characterData:true}, () => this.evaluate('shadow-mutation'));
+      for (const root of shadowRoots(scope)) this.observe(root, {childList:true,subtree:true,attributes:true,attributeFilter,characterData:true}, records => {
+        const structural=records.some(r=>r.type==='childList'&&[...r.addedNodes,...r.removedNodes].some(n=>n instanceof Element));
+        if(structural)this.verificationPrepared=false;
+        this.evaluate('shadow-mutation');
+        if(structural&&this.active&&this.phase==='watching')this.installVerification();
+      });
       for (let node = parentOf(scope); node; node = parentOf(node)) {
         this.observe(node, {childList: true, attributes: true, attributeFilter}, () => {
           if (!scope.isConnected) { this.disconnect(); this.installWatching(); if (this.settings.pollingMs) this.poll(); }
@@ -507,13 +528,16 @@
       const shadowSafety = safety.includes('>>>');
       this.observe(document.documentElement, {childList: true, subtree: true}, records => {
         if (records.some(r => [...r.addedNodes].some(n => n instanceof Element && (shadowSafety || n.matches(safety) || n.querySelector(safety))))) {
-          if (!this.stopForBlocker()) this.bindGuards(() => this.evaluate('safety-mutation'));
+          if (!this.stopForBlocker()) {this.bindGuards(() => this.evaluate('safety-mutation'));if(this.verificationPrepared)this.installVerification();}
         }
       });
       for (const event of ['transitionend', 'animationend']) {
         scope.addEventListener(event, this.onVisualChange ||= () => this.safe(() => this.evaluate('visual-change')));
       }
       this.visualScope = scope;
+      // Install completion observers while waiting. Their callbacks cannot
+      // complete a watching/dispatching step; baseline stays fresh at claim.
+      this.installVerification();
     }
     removeVisualListeners() {
       if (this.visualScope && this.onVisualChange) {
@@ -532,8 +556,9 @@
       }, this.settings.pollingMs);
     }
     verificationState() {
-      if (this.step.verify.kind === 'newContext') return {visible: false, text: null, attr: null};
+      if (this.step.verify.kind === 'newContext') {this.currentVerificationNode=null;return {visible: false, text: null, attr: null};}
       const v = this.step.verify, node = unique(v.selector);
+      this.currentVerificationNode=node;
       return {visible: shown(node), text: node?.textContent?.trim() ?? null, attr: node?.getAttribute(v.attribute) ?? null};
     }
     verificationMatches(state) {
@@ -637,9 +662,8 @@
         this.finish('error', '완료 조건이 클릭 전에 이미 만족됩니다. 새 전환을 증명하는 조건으로 변경하세요.'); return;
       }
       this.phase = this.settings.clickMethod === 'cdp' ? 'dispatching' : 'verifying';
-      this.removeVisualListeners(); this.disconnect();
-      // Arm before dispatch: synchronous DOM completion is observed too.
-      this.installVerification();
+      this.removeVisualListeners();
+      if(!this.verificationPlanValid())this.installVerification();
       const attempt = this.log('click-attempt', `${this.step.name}: ${this.settings.clickMethod === 'cdp' ? 'CDP 입력 준비 (아직 전송하지 않음)' : this.step.event + ' 한 번 실행'}`, 'info',
         {actionableDetectedAt: detectedAt, actionableMonotonicMs: detectedMono, source, eventType: this.step.event,clickMethod:this.settings.clickMethod || 'javascript'});
       attempt.detectToAttemptMs = attempt.monotonicMs - detectedMono;
@@ -649,7 +673,7 @@
       attempt.scheduledDeltaMs = this.settings.scheduledAt ? attempt.timestamp - this.settings.scheduledAt : null;
       this.run.lastAttempt = attempt;
       if (this.settings.clickMethod === 'cdp') {
-        this.dispatchCdp(attempt).catch(e => this.finish('error',e.message));
+        this.dispatchCdp(attempt).catch(e => {if(this.phase!=='disconnected')this.finish('error',e.message);});
         return;
       }
       /* Legacy JavaScript input disabled in 2.2.5; retained for reference.
@@ -689,14 +713,21 @@
       attempt.attemptId=attemptId;
       const savingAt=performance.now();
       this.run.status='verifying';this.run.message=this.step.name+': CDP 좌표 확인 및 입력 중';
+      const intent={stepIndex:this.run.stepIndex,cycle:this.run.cycle,message:this.run.message,lastAttempt:attempt,lastObservation:this.run.lastObservation};
+      const checkpoint=this.pendingCheckpoint;
+      // Promote only a queued NOL checkpoint. Oversized histories take the
+      // original durable path; an already-started write is always drained.
+      if(this.step.nolPrimary && checkpoint && !checkpoint.started &&
+          JSON.stringify({...intent,checkpointLogs:checkpoint.snapshot.logs}).length<=60000){
+        checkpoint.promoted=true;this.pendingCheckpoint=null;intent.checkpointLogs=checkpoint.snapshot.logs;attempt.checkpointPromoted=true;
+      }
       // Drain older checkpoints without adding another get/set before input.
       // The worker commits the compact intent and recovery marker together.
       await saving;
       attempt.preInputQueueMs=performance.now()-savingAt;
       if (!this.active) return;
       const requestAt=performance.now();
-      const intent={stepIndex:this.run.stepIndex,cycle:this.run.cycle,message:this.run.message,lastAttempt:attempt,lastObservation:this.run.lastObservation};
-      const result = await chrome.runtime.sendMessage({action:'cdpClick',runId:this.run.id,attemptId,point,intent});
+      const result = await this.sendCdpClick({action:'cdpClick',runId:this.run.id,attemptId,point,intent});
       attempt.cdpRoundTripMs=performance.now()-requestAt;
       if (!this.active) return;
       if (result?.waitForPointer) {
@@ -759,16 +790,41 @@
       this.later(() => { if (this.phase === 'verifying' && this.stepToken === token) this.finish('timeout', this.step.name + ': 완료 검증 시간 초과. 재클릭하지 않습니다.'); }, this.step.verify.timeoutMs);
       if (this.settings.pollingMs) this.poll();
       this.checkVerification('after-dispatch');
+      this.flushConsole();
+    }
+    async sendCdpClick(request) {
+      if(!this.channelReady)return chrome.runtime.sendMessage(request); // Never-bound legacy/test transport only.
+      await this.channelReady;
+      const port=this.documentPort;
+      if(!port||!this.active||this.phase!=='dispatching')throw new Error('CDP 클릭 연결이 없습니다. 재전송하지 않습니다.');
+      if(this.commandPending.size)throw new Error('중복 CDP 요청을 전송하지 않습니다.');
+      return new Promise((resolve,reject)=>{
+        const id=++this.commandSequence;
+        const timer=setTimeout(()=>{
+          this.commandPending.delete(id);const error=new Error('CDP 클릭 응답 시간 초과: 입력 재전송 없이 종료합니다.');
+          this.endCdpChannel(error);this.closeCdpChannel();reject(error);
+        },10000);
+        this.commandPending.set(id,{resolve,reject,timer});
+        try{port.postMessage({kind:'command',id,runId:this.run.id,request});}
+        catch(error){this.endCdpChannel(error);this.closeCdpChannel();reject(error);}
+      });
     }
     openCdpChannel() {
       if(!chrome.runtime.connect)return; // Older test/legacy transports remain supported.
       const port=chrome.runtime.connect({name:'ticket-cdp-document'});this.documentPort=port;
+      this.commandPending=new Map();this.commandSequence=0;
       let resolveReady,rejectReady,ready=false;
       this.channelReady=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject;});
       const timer=setTimeout(()=>{rejectReady(new Error('CDP 문서 연결 준비 시간 초과'));this.closeCdpChannel();},5000);
-      this.channelCleanup=()=>{clearTimeout(timer);if(!ready)rejectReady(new Error('CDP 문서 연결이 종료되었습니다.'));};
+      this.channelCleanup=()=>{
+        clearTimeout(timer);const error=new Error('CDP 문서 연결이 종료되었습니다.');if(!ready)rejectReady(error);
+        for(const item of this.commandPending.values()){clearTimeout(item.timer);item.reject(error);}this.commandPending.clear();
+      };
       port.onMessage.addListener(message=>{
         if(message?.kind==='ready'&&message.runId===this.run.id){ready=true;clearTimeout(timer);resolveReady();return;}
+        if(message?.kind==='command-result'&&message.runId===this.run.id){
+          const item=this.commandPending.get(message.id);if(item){this.commandPending.delete(message.id);clearTimeout(item.timer);item.resolve(message.result);}return;
+        }
         if(message?.kind!=='request'||message.runId!==this.run.id||!Number.isInteger(message.id))return;
         let result;try{
           if(message.request?.runId!==this.run.id)throw new Error('CDP 문서 요청 실행 ID가 다릅니다.');
@@ -780,6 +836,7 @@
       });
       port.onDisconnect.addListener(()=>{
         clearTimeout(timer);if(this.documentPort===port)this.documentPort=null;
+        this.channelCleanup?.();
         const error=new Error('CDP 문서 연결이 끊겼습니다. 입력 재전송 없이 종료합니다.');
         if(!ready)rejectReady(error);else this.endCdpChannel(error);
       });
@@ -806,32 +863,45 @@
       }
     }
 
+    verificationPlanValid() {
+      if(!this.verificationPrepared)return false;
+      if(this.step.verify.kind==='newContext')return true;
+      if(this.verificationNode!==this.currentVerificationNode || this.verificationScope&&!this.verificationScope.isConnected ||
+          this.currentVerificationNode&&this.verificationRoot!==this.currentVerificationNode.getRootNode())return false;
+      let index=0;for(let parent=this.currentVerificationNode?.parentElement;parent;parent=parent.parentElement)
+        if(this.verificationAncestors[index++]!==parent)return false;
+      return index===this.verificationAncestors.length;
+    }
     installVerification() {
+      this.disconnectVerification();
+      const observe=(root,options,callback)=>this.observe(root,options,callback,'verify');
       const external = this.step.verify.kind === 'newContext';
       const node = external ? null : unique(this.step.verify.selector);
       const scope = unique(this.profile.scopeSelector);
+      this.verificationNode=node;this.verificationScope=scope;this.verificationRoot=node?.getRootNode();
+      this.verificationAncestors=[];for(let parent=node?.parentElement;parent;parent=parent.parentElement)this.verificationAncestors.push(parent);
       const callback = () => this.checkVerification('mutation');
       if (scope) {
-        this.scope = scope;
-        this.observe(scope, {childList: true, subtree: true, attributes: true, characterData: true}, callback);
-        for (const root of shadowRoots(scope)) this.observe(root, {childList:true,subtree:true,attributes:true,characterData:true}, callback);
+        observe(scope, {childList: true, subtree: true, attributes: true, characterData: true}, callback);
+        for (const root of shadowRoots(scope)) observe(root, {childList:true,subtree:true,attributes:true,characterData:true}, callback);
       }
       if (node && !scope?.contains(node)) {
-        this.observe(node.parentElement || node, {childList: true, subtree: true, attributes: true, characterData: true}, callback);
+        observe(node.parentElement || node, {childList: true, subtree: true, attributes: true, characterData: true}, callback);
         for (let parent = node.parentElement; parent; parent = parent.parentElement) {
-          this.observe(parent, {childList: true, attributes: true, attributeFilter: ATTRS}, callback);
+          observe(parent, {childList: true, attributes: true, attributeFilter: ATTRS}, callback);
         }
       } else if (!node && !external) {
         // A not-yet-created completion marker can occur outside the action region.
-        this.observe(document.documentElement, {childList: true, subtree: true}, () => {
+        observe(document.documentElement, {childList: true, subtree: true}, () => {
           if (unique(this.step.verify.selector)) {
-            this.disconnect(); this.installVerification();
+            this.installVerification();
           }
           this.checkVerification('completion-added');
         });
       }
-      this.bindGuards(callback);
-      if (external) this.observe(document.documentElement, {childList: true, subtree: true}, callback);
+      this.bindGuards(callback,'verify');
+      if (external) observe(document.documentElement, {childList: true, subtree: true}, callback);
+      this.verificationPrepared=true;
     }
     contextOpened(detail) {
       if (this.active && this.claimed && this.phase === 'dispatching' && this.step.verify.kind === 'newContext') { this.pendingContext = detail; return true; }
@@ -892,6 +962,7 @@
       this.active = false; this.phase = status; this.cleanup();
       this.run.status = status; this.run.message = message; this.run.endedAt = endedAt;
       this.log('run-end', message, ['completed', 'tested'].includes(status) ? 'success' : status === 'error' ? 'error' : 'warning');
+      this.flushConsole();
       this.persist().finally(() => this.notifyEnd());
     }
   }

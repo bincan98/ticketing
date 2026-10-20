@@ -30,7 +30,7 @@ chrome.runtime.onConnect?.addListener(port=>{
       if(!run||session.canceled||session.closing||sender?.id!==chrome.runtime.id||sender.tab?.id!==run.tabId||
           sender.frameId!==run.frameId||sender.documentId!==run.documentId||message.runId!==run.id||documentChannels.has(run.id)){close();return;}
       let sequence=0;const pending=new Map();
-      channel={session,pending,close,request:request=>new Promise((resolve,reject)=>{
+      channel={session,pending,close,commandSequence:0,commandActive:false,request:request=>new Promise((resolve,reject)=>{
         if(pending.size>=16){reject(new Error('CDP 문서 요청 상한을 초과했습니다.'));return;}
         const id=++sequence,timer=setTimeout(()=>{pending.delete(id);reject(new Error('CDP 문서 응답 시간 초과'));close();},5000);
         pending.set(id,{resolve,reject,timer});
@@ -38,6 +38,20 @@ chrome.runtime.onConnect?.addListener(port=>{
       })};
       documentChannels.set(run.id,channel);session.requiresDocumentPort=true;
       try{port.postMessage({kind:'ready',runId:run.id});}catch{close();}return;
+    }
+    if(message?.kind==='command'&&channel&&message.runId===channel.session.run.id&&Number.isSafeInteger(message.id)&&message.id>0){
+      if(message.id<=channel.commandSequence)return; // Never replay an input request.
+      channel.commandSequence=message.id;
+      const request=message.request,session=channel.session;
+      const respond=result=>{if(!disposed)try{port.postMessage({kind:'command-result',id:message.id,runId:session.run.id,result});}catch{close();}};
+      if(channel.commandActive||request?.action!=='cdpClick'||request.runId!==session.run.id||cdp.session!==session||session.canceled||session.closing){respond({success:false,error:'유효하지 않거나 중복된 CDP 클릭 요청입니다.'});return;}
+      channel.commandActive=true;
+      Promise.resolve().then(()=>{
+        const logs=inputCheckpoint(request,session.run.id);
+        if(logs)session.promotedCheckpoint=logs;
+        return initialize().then(()=>cdp.click(request,port.sender));
+      }).then(respond,error=>respond({success:false,error:error.message,waitForPointer:!!error.waitForPointer})).finally(()=>{channel.commandActive=false;});
+      return;
     }
     if(message?.kind==='response'&&channel&&message.runId===channel.session.run.id&&Number.isInteger(message.id)){
       const item=channel.pending.get(message.id);if(!item)return;channel.pending.delete(message.id);clearTimeout(item.timer);item.resolve(message.result);
@@ -51,6 +65,13 @@ let operations = Promise.resolve(),inputWrites=Promise.resolve();
 function serial(task) {
   const next = operations.then(task, task); operations = next.catch(() => {}); return next;
 }
+function inputCheckpoint(request,runId) {
+  const logs=request.intent?.checkpointLogs;
+  if(logs===undefined)return null;
+  if(!Array.isArray(logs)||logs.length>500||logs.some(log=>!log||log.runId!==runId||!Number.isFinite(log.timestamp)||typeof log.event!=='string')||JSON.stringify(request.intent).length>65536)
+    throw new Error('입력 checkpoint가 현재 실행과 맞지 않습니다.');
+  return logs;
+}
 function recordCdpInput(session, request, marker) {
   // Never queue behind a control operation that may be awaiting this CDP
   // flight. Terminal/stop cancel first and drain only these short writes.
@@ -63,9 +84,11 @@ function recordCdpInput(session, request, marker) {
         attempt?.runId!==macroRun.id || attempt.event!=='click-attempt' || attempt.clickMethod!=='cdp' || attempt.attemptId!==request.attemptId ||
         !Number.isFinite(attempt.timestamp) || !Number.isFinite(attempt.actionableDetectedAt) || !Number.isFinite(attempt.actionableMonotonicMs) ||
         JSON.stringify(intent).length>65536)throw new Error('클릭 준비 정보가 현재 실행과 맞지 않습니다. 확장과 페이지를 새로고침하세요.');
+    const checkpoint=inputCheckpoint(request,macroRun.id);
     const {logs,...state}=macroRun;
     await chrome.storage.local.set({macroRun:{...state,status:'verifying',message:String(intent.message||'CDP 입력 준비').slice(0,2000),
-      lastAttempt:attempt,lastObservation:intent.lastObservation??state.lastObservation},ticketCdpSession:marker});
+      lastAttempt:attempt,lastObservation:intent.lastObservation??state.lastObservation},ticketCdpSession:marker,...(checkpoint?{macroLogs:checkpoint}:{})});
+    session.promotedCheckpoint=null;
     if(cdp.session!==session || session.canceled || session.closing){
       const newer=session.controlRun;
       if(newer){
@@ -139,6 +162,12 @@ async function initializeOnce() {
 }
 function checkpointLogs(data, run) {
   const logs=Array.isArray(run.logs) ? [...run.logs] : (data.macroLogs || []).filter(entry=>entry.runId===run.id);
+  const pending=cdp.session?.run.id===run.id?cdp.session.promotedCheckpoint:null;
+  if(pending){
+    const key=entry=>JSON.stringify([entry.event,entry.timestamp,entry.monotonicMs,entry.cycle,entry.stepIndex]);
+    const seen=new Set(logs.map(key));for(const entry of pending)if(!seen.has(key(entry))){logs.push(entry);seen.add(key(entry));}
+    logs.sort((a,b)=>a.timestamp-b.timestamp||(a.monotonicMs||0)-(b.monotonicMs||0));
+  }
   // The input gate deliberately omits history. Its latest attempt is durable
   // even if the document disappears before the normal final history save.
   const attempt=run.lastAttempt;
@@ -225,7 +254,7 @@ async function prepareActive(profile) {
   const results = await chrome.scripting.executeScript({target: {tabId: tab.id, frameIds: [frame.frameId]}, files: ['content.js']});
   const injected = results.find(r => r.frameId === frame.frameId);
   if (!injected?.documentId) throw new Error('프레임 문서에 접근하지 못했습니다.');
-  return {tabId: tab.id, frameId: frame.frameId, documentId: injected.documentId, topUrl:tab.url, topDocumentId:frames.find(f => f.frameId === 0)?.documentId};
+  return {tabId: tab.id, windowId:tab.windowId, frameId: frame.frameId, documentId: injected.documentId, topUrl:tab.url, topDocumentId:frames.find(f => f.frameId === 0)?.documentId};
 }
 function assertCapturedTarget(target, expected) {
   const keys = ['tabId','frameId','documentId','topUrl','topDocumentId'];

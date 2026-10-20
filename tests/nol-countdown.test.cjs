@@ -64,6 +64,7 @@ globalThis.activate=()=>{clearInterval(clock);activationAt=performance.now();boo
     assert.equal(finished.logs.filter(log=>log.event==='step-wait').length,1,'replacement reset the step/deadline');
     return {clicks:1,duplicates:0,status:finished.status,clickAttempts:finished.logs.filter(log=>log.event==='click-attempt').length,
       rebinds:finished.logs.filter(log=>log.event==='button-rebound').length,activationToClickMs:data.inputs.at(-1).at-data.activationAt,
+      checkpointPromoted:!!finished.logs.find(log=>log.event==='click-attempt')?.checkpointPromoted,
       timing:finished.logs.find(log=>log.event==='click-timing'),events:data.inputs};
   };
   const repeat=Number(process.env.TICKET_NOL_REPEAT||1);

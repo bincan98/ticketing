@@ -170,7 +170,7 @@
       if (!this.api.debugger || !await this.api.permissions.contains({permissions:['debugger']})) throw new Error('debugger 권한이 없습니다. 확장 업데이트/권한 승인을 확인하세요.');
       const session = {run, canceled:false, closing:false, detached:false, claims:new Set(), mouseDown:false,
         children:new Map(),contexts:new Map(),worlds:new Map(),ownerCache:new Map(),ownerLoads:new Map(),cacheDisposals:new Set(),mappingCache:null,
-        frameRevision:0,framesEnabled:run.frameId!==0};
+        frameRevision:0,framesEnabled:run.frameId!==0,windowId:run.windowId};
       this.session = session;
       try {
         await this.api.storage.local.set({ticketCdpSession:{runId:run.id,tabId:run.tabId,state:'attaching'}});
@@ -188,7 +188,9 @@
     async live(session) {
       // These reads are independent. The window lookup depends only on tab info.
       const tabRead = this.api.tabs.get(session.run.tabId);
-      const windowRead = tabRead.then(tab => this.api.windows && Number.isInteger(tab.windowId) ? this.api.windows.get(tab.windowId) : null);
+      const pinnedWindow=Number.isInteger(session.windowId);
+      const windowRead = pinnedWindow && this.api.windows ? this.api.windows.get(session.windowId) :
+        tabRead.then(tab => this.api.windows && Number.isInteger(tab.windowId) ? this.api.windows.get(tab.windowId) : null);
       const [{macroRun}, tab, [focused], frameList, window] = await Promise.all([
         this.api.storage.local.get('macroRun'), tabRead,
         this.api.tabs.query({active:true,currentWindow:true}),
@@ -196,6 +198,7 @@
       ]);
       // Stop/detach can arrive while reads are pending; check again afterwards.
       if (this.session !== session || session.canceled || session.closing || !active(macroRun) || macroRun.stopRequested || macroRun.id !== session.run.id) throw new Error('CDP 실행이 중지되거나 세션이 소실되었습니다.');
+      if(pinnedWindow && tab.windowId!==session.windowId)throw new Error('실행 탭이 다른 Chrome 창으로 이동했습니다. 다시 시작하세요.');
       if (window && !window.focused) throw pointerError('Chrome 창에 포커스를 두고 예매 버튼에 마우스를 이동해 주세요.');
       if (focused?.id !== session.run.tabId || tab.url !== session.run.topUrl) throw new Error('CDP 대상 탭이 활성 탭이 아니거나 주소가 변경되었습니다.');
       const frames = frameList || [];
@@ -221,6 +224,11 @@
         expression:'globalThis.__ticketCdpDocumentToken',returnByValue:true},context.sessionId);
       if(cacheHit){
         revision=session.frameRevision;frames=stored.frames;root=stored.root;context=stored.context;
+        // Reuse only the route ID. Token, revision, parent geometry and pointer
+        // are still freshly checked before input; a changed route aborts.
+        const cachedFrame=frames.get(context.auxData.frameId);
+        if(prepareInput && !session.mouseDown && cachedFrame && cachedFrame.url+(cachedFrame.urlFragment||'')===local.documentUrl)
+          Promise.resolve(prepareInput(cachedFrame.sessionId)).catch(()=>{});
         let token;
         try{token=await tokenRead(context);}catch(error){
           this.invalidateFrames(session,true);

@@ -319,3 +319,43 @@ test('a controller-driven Port close preserves the durable manual stop',async()=
   assert.equal(f.e.phase,'disconnected','input authorization must stop before the storage read');
   await new Promise(setImmediate);assert.equal(f.e.ended.status,'stopped');assert.equal(f.actions.length,0);assert.equal(f.connects(),1);
 });
+test('click commands use the bound Port and correlate only their own responses',async()=>{
+  const f=portFixture();f.e.openCdpChannel();f.receive({kind:'ready',runId:'run'});await f.e.channelReady;f.e.phase='dispatching';
+  const flight=f.e.sendCdpClick({action:'cdpClick',runId:'run'});await new Promise(setImmediate);
+  const message=f.sent.at(-1);assert.equal(message.kind,'command');assert.equal(f.actions.length,0);
+  await assert.rejects(f.e.sendCdpClick({action:'cdpClick',runId:'run'}),/중복/);
+  f.receive({kind:'command-result',runId:'other',id:message.id,result:{success:true}});assert.equal(f.e.commandPending.size,1);
+  f.receive({kind:'command-result',runId:'run',id:message.id,result:{success:true}});assert((await flight).success);
+  f.e.active=false;f.e.closeCdpChannel();
+});
+test('a click awaiting a disconnected Port is rejected without sending a legacy request',async()=>{
+  const f=portFixture();f.e.openCdpChannel();f.receive({kind:'ready',runId:'run'});await f.e.channelReady;f.e.phase='dispatching';
+  const flight=f.e.sendCdpClick({action:'cdpClick',runId:'run'}),outcome=assert.rejects(flight,/연결/);
+  await new Promise(setImmediate);f.disconnect();await outcome;await new Promise(setImmediate);
+  assert.equal(f.actions.length,0);assert.equal(f.e.commandPending.size,0);assert.equal(f.e.ended.status,'interrupted');
+});
+for(const large of [false,true])test('a queued NOL checkpoint '+(large?'keeps its original write when history is too large':'moves intact into the input claim'),async()=>{
+  const data={macroRun:{id:'run',status:'watching'}},writes=[],requests=[];
+  const e=engine(async request=>{requests.push(request);return {success:true,timings:{}};},{get:async()=>data,set:async p=>{writes.push(p);Object.assign(data,p);}});
+  e.persist=Object.getPrototypeOf(e).persist.bind(e);e.step.nolPrimary=true;e.run.status='watching';
+  e.pointerPoint=()=>({x:10,y:20,pointerRevision:3});e.afterDispatch=()=>{};e.logClickTiming=()=>{};
+  e.log('button-rebound',large?'history '.repeat(15000):'new target');e.persist();e.phase='dispatching';
+  const attempt=e.log('click-attempt','input');await e.dispatchCdp(attempt);
+  assert.equal(writes.length,large?1:0);assert.equal(requests.length,1);
+  assert.equal(!!requests[0].intent.checkpointLogs,!large);if(!large)assert.equal(requests[0].intent.checkpointLogs[0].event,'button-rebound');
+});
+test('console diagnostics wait until input has left the dispatching phase',async()=>{
+  const e=engine();e.phase='dispatching';e.log('click-attempt','keep it buffered');await new Promise(setImmediate);
+  assert.equal(e.consoleEntries.length,1);e.phase='verifying';e.flushConsole();assert.equal(e.consoleEntries.length,0);assert.equal(e.run.logs.length,1);
+});
+test('prepared verification rejects a changed ancestor path before reusing observers',()=>{
+  const e=engine(),root={},outer={},parent={parentElement:outer},node={parentElement:parent,getRootNode:()=>root};
+  e.step.verify={kind:'appeared'};e.verificationPrepared=true;e.verificationNode=node;e.currentVerificationNode=node;
+  e.verificationRoot=root;e.verificationScope={isConnected:true};e.verificationAncestors=[parent,outer];assert(e.verificationPlanValid());
+  parent.parentElement={};assert.equal(e.verificationPlanValid(),false);e.currentVerificationNode={};assert.equal(e.verificationPlanValid(),false);
+});
+test('prepared completion checks cannot finish a watching or dispatching step',()=>{
+  const e=engine(undefined,undefined,{location:{href:'initial'}});e.initialUrl='initial';let reads=0;e.verificationState=()=>{reads++;return {};};e.verificationMatches=()=>false;e.stopForBlocker=()=>false;
+  e.phase='watching';e.checkVerification('prepared');e.phase='dispatching';e.checkVerification('prepared');assert.equal(reads,0);
+  e.phase='verifying';e.checkVerification('prepared');assert.equal(reads,1);
+});

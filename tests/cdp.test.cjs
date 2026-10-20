@@ -419,6 +419,26 @@ test('a warm frame mapping rechecks its unique document token and fresh geometry
   assert(f.calls.filter(c=>c.method==='Runtime.evaluate').every(c=>c.params.uniqueContextId==='unique-child'&&!('contextId' in c.params)));
   await f.manager.end(f.run.id);assert.equal(count('Runtime.releaseObject'),1);
 });
+for(const moved of [false,true])test('a pinned window lookup overlaps the tab read'+(moved?' and rejects tab movement':''),async()=>{
+  const f=fixture();f.run.windowId=1;await f.manager.start(f.run);
+  let tabReady,windowReady;const entered=[];
+  f.api.tabs.get=()=>{entered.push('tab');return new Promise(resolve=>{tabReady=()=>resolve({url:f.run.topUrl,windowId:moved?2:1});});};
+  f.api.windows={get:id=>{assert.equal(id,1);entered.push('window');return new Promise(resolve=>{windowReady=()=>resolve({focused:true});});}};
+  const live=f.manager.live(f.manager.session),outcome=moved?assert.rejects(live,/다른 Chrome 창/):live;
+  assert.deepEqual(entered,['tab','window']);windowReady();tabReady();await outcome;
+  assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,0);await f.manager.end(f.run.id);
+});
+for(const changed of [false,true])test('a warm iframe claim overlaps token validation'+(changed?' but a changed token cannot authorize input':''),async()=>{
+  const f=await iframeFixture(),original=f.api.debugger.sendCommand;let finishToken,blocked=false,claims=0;
+  f.api.debugger.sendCommand=(target,method,params)=>{
+    if(method==='Runtime.evaluate'&&!blocked){blocked=true;return new Promise(resolve=>{finishToken=()=>resolve({result:{value:changed?'other-token':'token'}});});}
+    return original(target,method,params);
+  };
+  const commit=f.manager.commitInput;f.manager.commitInput=(...args)=>{claims++;return commit(...args);};
+  const flight=f.manager.click(f.request,f.sender),outcome=changed?assert.rejects(flight,/識別|식별 정보가 변경/):flight;
+  await new Promise(setImmediate);assert.equal(claims,1);assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,0);
+  finishToken();await outcome;assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,changed?0:1);await f.manager.end(f.run.id);
+});
 
 for(const method of ['Page.frameAttached','Page.frameDetached','Page.frameNavigated','Page.navigatedWithinDocument','Page.documentOpened'])test(method+' discards cached routes and owners before the next read',async()=>{
   const f=await iframeFixture(),session=f.manager.session,revision=session.frameRevision;

@@ -207,6 +207,11 @@ let context,profile;
     }
     let closedData;
     let alreadyActivated=false;
+    if(scenario==='completion-moved')await targetFrame.evaluate(()=>{
+      const done=window.inputLab.root.querySelector('#done');document.body.append(done);
+      window.inputLab.target.addEventListener('click',()=>{done.hidden=true;setTimeout(()=>{done.hidden=false;},80);});
+    });
+    if(scenario==='completion-already')await targetFrame.evaluate(()=>{window.inputLab.root.querySelector('#done').hidden=false;});
     if(scenario==='worker-reload-pressed'||scenario==='port-disconnect-pressed') {
       await worker.evaluate(()=>{
         const original=chrome.debugger.sendCommand.bind(chrome.debugger);
@@ -310,6 +315,7 @@ let context,profile;
     {layout:'cross-frame',scenario:'frame-scroll'},{layout:'cross-frame',steps:2},{layout:'cross-frame',count:2},{layout:'cross-shadow'},{layout:'cross-closed'},{layout:'nested-frame'},{layout:'claude-frame'},
     {layout:'claude-frame',scenario:'complete-on-press'},{layout:'claude-frame',scenario:'hide-on-press'},
     {layout:'cross-frame',scenario:'frame-reposition'},{scenario:'partial-cover'},{scenario:'legacy-js-setting'},
+    {scenario:'completion-moved'},{layout:'cross-frame',scenario:'completion-moved'},
     {zoom:1.25},{zoom:.8},{layout:'scrolled'},{steps:2},{count:2}])await record('CDP '+JSON.stringify(options),async()=>{
     const r=await trial(options);assert.equal(r.status,'completed',r.message);assert.equal(r.clicks,options.layout==='claude-frame'?0:options.steps||options.count||1);assert(r.changed);
     if(options.layout==='claude-frame'){
@@ -322,6 +328,7 @@ let context,profile;
     {layout:'cross-frame',scenario:'worker-reload-pressed'},{layout:'cross-frame',scenario:'stop'},{layout:'cross-frame',testMode:true},
     {scenario:'no-pointer'},{scenario:'wrong-pointer'},{scenario:'synthetic-pointer'},{scenario:'pointer-leave'},
     {scenario:'scroll-after-pointer'},{layout:'cross-frame',scenario:'frame-move-before-press'},
+    {scenario:'completion-already'},
     {layout:'move-on-press'},{scenario:'covered'},{scenario:'stop'},{scenario:'detach'},{scenario:'navigation'},{scenario:'worker-reload'},{scenario:'worker-reload-pressed'},{scenario:'tab-close'},{testMode:true}])await record('non-completion '+JSON.stringify(options),async()=>{
     const r=await trial(options);assert.notEqual(r.status,'completed');assert.equal(r.clicks,0);
     if(['frame-cover','frame-rotate'].includes(options.scenario))assert(['timeout','error'].includes(r.status));
@@ -336,6 +343,7 @@ let context,profile;
     }
     if(options.scenario==='worker-reload-pressed'){assert(r.events.some(e=>e.type==='mousedown'));assert.equal(r.targetActive,false,'mouse press remained held after worker restart');}
     if(options.testMode){assert.equal(r.events.length,0);assert.equal(r.status,'tested',r.message);}
+    if(options.scenario==='completion-already'){assert.equal(r.events.length,0);assert.match(r.message,/이미 만족/);}
   });
   for(const layout of ['plain','cross-frame'])for(const scenario of ['port-disconnect','port-disconnect-pressed'])await record('CDP document Port '+layout+' '+scenario,async()=>{
     const r=await trial({layout,scenario});assert.equal(r.status,'interrupted');assert.equal(r.clicks,0);assert.equal(r.targetActive,false);

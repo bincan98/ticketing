@@ -54,7 +54,7 @@ function worker(data = {}, behavior = {}) {
     startup:()=>onStartup(), removed:id=>onRemoved(id), committed:details=>onCommitted(details), created:tab=>onCreated(tab),
     storageChanged:changes=>onStorageChanged(changes,'local'),
     connect:port=>onConnect(port),
-    documentSession:()=>{const session={run:data.macroRun,canceled:false,closing:false,worlds:new Map(),ownerCache:new Map(),ownerLoads:new Map(),cacheDisposals:new Set()};context.testCdp.session=session;return {session,request:r=>context.testDocument(session,r)};},
+    documentSession:()=>{const session={run:data.macroRun,canceled:false,closing:false,worlds:new Map(),ownerCache:new Map(),ownerLoads:new Map(),cacheDisposals:new Set()};context.testCdp.session=session;return {session,request:r=>context.testDocument(session,r),click:fn=>{context.testCdp.click=fn;}};},
     inputCommit:(request,marker,flags={})=>{
       const session={run:data.macroRun,canceled:false,closing:false,worlds:new Map(),ownerCache:new Map(),ownerLoads:new Map(),cacheDisposals:new Set(),...flags};context.testCdp.session=session;
       return {session,flight:context.testRecordInput(session,request,marker)};
@@ -116,6 +116,33 @@ test('input intent and child recovery route use one compact write without changi
   assert.equal(w.behavior.writes.length,1);assert(w.behavior.writes[0].macroRun);assert(w.behavior.writes[0].ticketCdpSession);
   assert.equal(data.macroRun.logs,undefined);assert.equal(data.macroRun.status,'verifying');assert.deepEqual(data.macroRun.profile,before);
   assert.equal(data.macroRun.lastAttempt.attemptId,'attempt');assert.deepEqual(data.ticketCdpSession,marker);assert.equal(data.macroLogs[0].event,'checkpoint');
+});
+test('promoted history and the mandatory input claim use one atomic write',async()=>{
+  const {data,request,marker}=inputData(),w=worker(data);
+  request.intent.checkpointLogs=[{runId:'run',timestamp:1,event:'button-replaced'},{runId:'run',timestamp:2,event:'button-rebound'}];
+  await w.inputCommit(request,marker).flight;assert.equal(w.behavior.writes.length,1);
+  assert.deepEqual(data.macroLogs,request.intent.checkpointLogs);assert.equal(data.ticketCdpSession.state,'input-claimed');
+});
+test('foreign promoted history is rejected before a storage write',async()=>{
+  const {data,request,marker}=inputData(),w=worker(data);request.intent.checkpointLogs=[{runId:'foreign',timestamp:1,event:'history'}];
+  await assert.rejects(w.inputCommit(request,marker).flight,/checkpoint/);assert.equal(w.behavior.writes,undefined);
+});
+test('a bound command uses its authenticated sender once and cannot replay',async()=>{
+  const w=worker(activeData()),d=w.documentSession(),p=documentPort();let calls=0,complete;
+  d.click((request,sender)=>{calls++;assert.equal(sender.documentId,'doc-2');return new Promise(resolve=>{complete=resolve;});});
+  w.connect(p.port);p.receive({kind:'bind',runId:'run'});
+  const message={kind:'command',id:1,runId:'run',request:{action:'cdpClick',runId:'run'}};
+  p.receive(message);p.receive(message);await new Promise(setImmediate);assert.equal(calls,1);
+  p.receive({...message,id:2});assert.equal(p.sent.at(-1).result.success,false);assert.equal(calls,1);
+  complete({success:true});await new Promise(setImmediate);assert(p.sent.some(m=>m.kind==='command-result'&&m.id===1&&m.result.success));
+  p.receive(message);await new Promise(setImmediate);assert.equal(calls,1);d.session.closing=true;p.drop();
+});
+test('Port loss before the claim preserves promoted diagnostics in terminal history',async()=>{
+  const w=worker(activeData()),d=w.documentSession(),p=documentPort();let complete;
+  d.click(()=>new Promise(resolve=>{complete=resolve;}));w.connect(p.port);p.receive({kind:'bind',runId:'run'});
+  p.receive({kind:'command',id:1,runId:'run',request:{action:'cdpClick',runId:'run',intent:{checkpointLogs:[{runId:'run',timestamp:2,event:'button-rebound'}]}}});
+  await new Promise(setImmediate);p.drop();await new Promise(setImmediate);
+  assert.equal(w.data.macroRun.status,'interrupted');assert(w.data.macroLogs.some(log=>log.event==='button-rebound'));complete({success:false});
 });
 
 test('stopped or mismatched input intent is rejected before any write',async()=>{
