@@ -211,7 +211,7 @@ for(const first of ['storage','geometry'])test('durable claim overlaps real ifra
   };
   f.api.tabs.sendMessage=async(tab,request)=>{events.push('rpc');return request.afterPress?{success:true,completedOnPress:true}:{success:true,point:{...f.request.point}};};
   const flight=f.manager.click(f.request,f.sender);await new Promise(setImmediate);
-  assert.deepEqual(events,['claim','geometry']);
+  assert.deepEqual([...events].sort(),['claim','geometry']);
   (first==='storage'?finishClaim:finishGeometry)();await new Promise(setImmediate);
   assert(!events.includes('rpc'));assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,0);
   (first==='storage'?finishGeometry:finishClaim)();const result=await flight;
@@ -536,5 +536,78 @@ test('stop during an early post-press viewport query cannot authorize release at
   f.manager.cancel(f.run.id);finish();await outcome;
   assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,1);
   assert(!f.calls.some(c=>c.params?.type==='mouseReleased'&&c.params.clickCount===1));await f.manager.end(f.run.id);
+});
+
+function freshTop(f,change={}){
+  Object.assign(f.run,{windowId:1});let queries=0,frames=0;
+  f.api.windows={get:async()=>({focused:change.focused??true})};
+  f.api.tabs.get=async()=>({id:7,url:f.run.topUrl,windowId:change.windowId??1,active:change.active??true});
+  f.api.tabs.query=async()=>{queries++;throw Error('Unexpected duplicate active query');};
+  f.api.webNavigation.getFrame=async details=>{assert.deepEqual(details,{tabId:7,frameId:0});frames++;return change.missing?undefined:
+    {documentId:'doc',url:f.run.topUrl,parentFrameId:-1,documentLifecycle:'active',frameType:'outermost_frame',errorOccurred:false,...change.frame};};
+  f.api.webNavigation.getAllFrames=async()=>{throw Error('Unexpected whole frame inventory');};
+  return {counts:()=>({queries,frames})};
+}
+test('a pinned top document checks fresh active/focused state and its single document without duplicate queries',async()=>{
+  const f=fixture(),probe=freshTop(f);await f.manager.start(f.run);await f.manager.click(f.request,f.sender);
+  assert.deepEqual(probe.counts(),{queries:0,frames:2});assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,1);await f.manager.end(f.run.id);
+});
+for(const change of [{active:false},{focused:false},{windowId:2}])test('the reduced live path rejects '+JSON.stringify(change),async()=>{
+  const f=fixture();freshTop(f,change);await f.manager.start(f.run);let result,error;try{result=await f.manager.click(f.request,f.sender);}catch(e){error=e;}
+  assert(error||result?.waitForPointer);assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,0);await f.manager.end(f.run.id);
+});
+test('single-frame lookup rejects replacement, non-active lifecycle, wrong URL/type/parent and missing frames',async()=>{
+  for(const change of [{missing:true},{frame:{documentId:'replacement'}},{frame:{url:'http://example.test/other'}},
+    {frame:{documentLifecycle:'cached'}},{frame:{errorOccurred:true}},{frame:{frameType:'sub_frame'}},{frame:{parentFrameId:3}}]){
+    const f=fixture();freshTop(f,change);await f.manager.start(f.run);await assert.rejects(f.manager.click(f.request,f.sender),/최상위 문서/);
+    assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,0);await f.manager.end(f.run.id);
+  }
+});
+test('iframe live validation retains both top and child document inventory checks',async()=>{
+  const f=await iframeFixture();let inventories=0;f.api.webNavigation.getFrame=async()=>{throw Error('Child path cannot use a root-only proof');};
+  f.api.webNavigation.getAllFrames=async()=>{inventories++;return [{frameId:0,documentId:'doc'},{frameId:1,documentId:'replacement'}];};
+  await assert.rejects(f.manager.click(f.request,f.sender),/교체/);assert(inventories);assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,0);await f.manager.end(f.run.id);
+});
+function contextStep(f){f.run.profile={steps:[{event:'click',verify:{kind:'newContext'}}]};f.run.stepIndex=0;f.request.intent={stepIndex:0,lastAttempt:{eventType:'click'}};}
+test('newContext joins fresh layout and live reads before one final after-press document request',async()=>{
+  const f=fixture();contextStep(f);const original=f.api.debugger.sendCommand,requests=[];let count=0,finish;
+  f.api.debugger.sendCommand=async(t,m,p)=>{const value=await original(t,m,p);if(m==='Page.getLayoutMetrics'&&++count===2)await new Promise(resolve=>{finish=resolve;});return value;};
+  f.api.tabs.sendMessage=async(t,r)=>{requests.push({...r});return {success:true,point:{...f.request.point}};};await f.manager.start(f.run);
+  const flight=f.manager.click(f.request,f.sender);await new Promise(setImmediate);assert.equal(typeof finish,'function');
+  assert.equal(requests.length,1);assert(!requests[0].afterPress);assert(!f.calls.some(c=>c.params?.type==='mouseReleased'));
+  finish();await flight;assert.equal(requests.length,2);assert.equal(requests[1].afterPress,true);assert.equal(f.calls.filter(c=>c.params?.type==='mouseReleased'&&c.params.clickCount===1).length,1);await f.manager.end(f.run.id);
+});
+for(const failure of ['pointer','blocker','stop'])test('newContext retains final '+failure+' checks and cancels release without replay',async()=>{
+  const f=fixture();contextStep(f);f.api.tabs.sendMessage=async(t,r)=>{
+    if(r.afterPress){if(failure==='stop')f.manager.cancel(f.run.id);return failure==='blocker'?{success:false,error:'안전 종료 표시'}:{success:true,point:{...f.request.point,signature:failure==='pointer'?'changed':f.request.point.signature}};}
+    return {success:true,point:{...f.request.point}};
+  };await f.manager.start(f.run);await assert.rejects(f.manager.click(f.request,f.sender),/재시도/);
+  assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,1);assert(!f.calls.some(c=>c.params?.type==='mouseReleased'&&c.params.clickCount===1));
+  assert(f.calls.some(c=>c.params?.type==='mouseReleased'&&c.params.x===-1));await f.manager.end(f.run.id);
+});
+test('DOM completion on press preserves its early proof and canceled release',async()=>{
+  const f=fixture();f.run.profile={steps:[{event:'pointerdown',verify:{kind:'textChanged'}}]};f.request.intent={stepIndex:0,lastAttempt:{eventType:'pointerdown'}};
+  const requests=[];f.api.tabs.sendMessage=async(t,r)=>{requests.push(r);return r.afterPress?{success:true,completedOnPress:true}:{success:true,point:{...f.request.point}};};
+  await f.manager.start(f.run);const result=await f.manager.click(f.request,f.sender);assert(result.completedOnPress);assert.equal(requests.length,2);
+  assert(f.calls.some(c=>c.params?.type==='mouseReleased'&&c.params.x===-1));await f.manager.end(f.run.id);
+});
+for(const valid of [true,false])test('warm token and geometry overlap, and neither alone authorizes a press: token '+valid,async()=>{
+  const f=await iframeFixture(),original=f.api.debugger.sendCommand;let finishToken,finishGeometry,blockedToken=false,blockedGeometry=false;
+  f.api.debugger.sendCommand=async(t,m,p)=>{
+    if(m==='Runtime.evaluate'&&!blockedToken){blockedToken=true;return new Promise(resolve=>{finishToken=()=>resolve({result:{value:valid?'token':'changed-token'}});});}
+    if(m==='Runtime.callFunctionOn'&&!blockedGeometry){blockedGeometry=true;await new Promise(resolve=>{finishGeometry=resolve;});}
+    return original(t,m,p);
+  };const flight=f.manager.click(f.request,f.sender),outcome=valid?flight:assert.rejects(flight,/식별 정보/);
+  await new Promise(setImmediate);assert.equal(typeof finishToken,'function');assert.equal(typeof finishGeometry,'function');assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,0);
+  finishGeometry();await new Promise(setImmediate);assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,0);
+  finishToken();await outcome;assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,valid?1:0);await f.manager.end(f.run.id);
+});
+test('a late warm token reply after failed geometry cannot republish or invalidate a later route',async()=>{
+  const f=await iframeFixture(),original=f.api.debugger.sendCommand;let finishToken,blocked=false;
+  f.api.debugger.sendCommand=async(t,m,p)=>{if(m==='Runtime.evaluate'&&!blocked){blocked=true;return new Promise(resolve=>{finishToken=()=>resolve({result:{value:'changed-token'}});});}
+    if(m==='Runtime.callFunctionOn')throw Error('geometry failed first');return original(t,m,p);};
+  await assert.rejects(f.manager.click(f.request,f.sender),/geometry failed first/);const revision=f.manager.session.frameRevision;
+  finishToken();await new Promise(setImmediate);assert.equal(f.manager.session.frameRevision,revision);assert.equal(f.manager.session.mappingCache,null);
+  assert.equal(f.calls.filter(c=>c.params?.type==='mousePressed').length,0);await f.manager.end(f.run.id);
 });
 

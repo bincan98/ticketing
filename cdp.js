@@ -191,16 +191,23 @@
       const pinnedWindow=Number.isInteger(session.windowId);
       const windowRead = pinnedWindow && this.api.windows ? this.api.windows.get(session.windowId) :
         tabRead.then(tab => this.api.windows && Number.isInteger(tab.windowId) ? this.api.windows.get(tab.windowId) : null);
-      const [{macroRun}, tab, [focused], frameList, window] = await Promise.all([
+      const activeQuery=()=>this.api.tabs.query({active:true,currentWindow:true}).then(([focused])=>focused?.id===session.run.tabId);
+      const focusRead=pinnedWindow&&this.api.windows ? tabRead.then(tab=>typeof tab.active==='boolean'?tab.active:activeQuery()) : activeQuery();
+      const topFrame=session.run.frameId===0&&session.run.topDocumentId===session.run.documentId&&typeof this.api.webNavigation.getFrame==='function';
+      const frameRead=topFrame?this.api.webNavigation.getFrame({tabId:session.run.tabId,frameId:0}).then(frame=>{
+        if(!frame||frame.documentId!==session.run.documentId||frame.url!==session.run.topUrl||frame.parentFrameId!==-1||frame.errorOccurred||
+            frame.documentLifecycle&&frame.documentLifecycle!=='active'||frame.frameType&&frame.frameType!=='outermost_frame')throw new Error('CDP 대상 최상위 문서가 변경되거나 활성 문서가 아닙니다.');
+        return [{...frame,frameId:0}];
+      }):this.api.webNavigation.getAllFrames({tabId:session.run.tabId});
+      const [{macroRun}, tab, focused, frameList, window] = await Promise.all([
         this.api.storage.local.get('macroRun'), tabRead,
-        this.api.tabs.query({active:true,currentWindow:true}),
-        this.api.webNavigation.getAllFrames({tabId:session.run.tabId}), windowRead
+        focusRead, frameRead, windowRead
       ]);
       // Stop/detach can arrive while reads are pending; check again afterwards.
       if (this.session !== session || session.canceled || session.closing || !active(macroRun) || macroRun.stopRequested || macroRun.id !== session.run.id) throw new Error('CDP 실행이 중지되거나 세션이 소실되었습니다.');
       if(pinnedWindow && tab.windowId!==session.windowId)throw new Error('실행 탭이 다른 Chrome 창으로 이동했습니다. 다시 시작하세요.');
       if (window && !window.focused) throw pointerError('Chrome 창에 포커스를 두고 예매 버튼에 마우스를 이동해 주세요.');
-      if (focused?.id !== session.run.tabId || tab.url !== session.run.topUrl) throw new Error('CDP 대상 탭이 활성 탭이 아니거나 주소가 변경되었습니다.');
+      if (!focused || tab.url !== session.run.topUrl) throw new Error('CDP 대상 탭이 활성 탭이 아니거나 주소가 변경되었습니다.');
       const frames = frameList || [];
       if (!frames.some(f => f.frameId === session.run.frameId && f.documentId === session.run.documentId) ||
           session.run.topDocumentId && !frames.some(f => f.frameId === 0 && f.documentId === session.run.topDocumentId)) throw new Error('CDP 대상 문서/iframe이 교체되었습니다.');
@@ -218,7 +225,7 @@
       const stored=session.mappingCache;
       const cacheHit=!!stored&&stored.revision===session.frameRevision&&stored.token===local.documentToken&&stored.url===local.documentUrl&&
         [...session.contexts.values()].includes(stored.context);
-      let revision,frames,root,context;
+      let revision,frames,root,context,pendingToken;
       const tokenRead=context=>this.command(session,'Runtime.evaluate',{
         ...(context.uniqueId?{uniqueContextId:context.uniqueId}:{contextId:context.id}),
         expression:'globalThis.__ticketCdpDocumentToken',returnByValue:true},context.sessionId);
@@ -229,13 +236,13 @@
         const cachedFrame=frames.get(context.auxData.frameId);
         if(prepareInput && !session.mouseDown && cachedFrame && cachedFrame.url+(cachedFrame.urlFragment||'')===local.documentUrl)
           Promise.resolve(prepareInput(cachedFrame.sessionId)).catch(()=>{});
-        let token;
-        try{token=await tokenRead(context);}catch(error){
-          this.invalidateFrames(session,true);
-          if(!prepareInput&&!session.mouseDown&&!session.canceled&&!session.closing&&refresh<3)return this.framePoint(session,local,attemptId,prepareInput,refresh+1);
-          throw pointerError('캐시된 iframe 문서 확인 실패: '+error.message);
-        }
-        if(token.exceptionDetails||token.result?.value!==local.documentToken){this.invalidateFrames(session,true);throw new Error('CDP iframe 문서 식별 정보가 변경되었습니다.');}
+        // This read has no cache side effects until joined below. Geometry can
+        // run concurrently, but neither a late reply nor a failure authorizes input.
+        pendingToken=(async()=>{
+          try{const token=await tokenRead(context);return token.exceptionDetails||token.result?.value!==local.documentToken ?
+            {error:new Error('CDP iframe 문서 식별 정보가 변경되었습니다.')} : null;}
+          catch(error){return {error:pointerError('캐시된 iframe 문서 확인 실패: '+error.message)};}
+        })();
       }else{
       // Auto-attach is recursive; wait for each newly discovered child's setup, with a bounded tree.
       for (let i=0, count=-1; i<50 && count!==session.children.size; i++) {
@@ -290,6 +297,7 @@
         if (!parent) throw new Error('CDP iframe의 부모 문서를 확인할 수 없습니다.');
         let owner;
         try{owner=await this.frameOwner(session,frame,parent,revision);}catch(error){
+          const token=await pendingToken;if(token?.error){this.invalidateFrames(session,true);error=token.error;}
           if(error.waitForPointer&&!prepareInput&&!session.mouseDown&&!session.canceled&&!session.closing&&refresh<3)return this.framePoint(session,local,attemptId,prepareInput,refresh+1);
           throw error;
         }
@@ -314,6 +322,12 @@
         frame=parent;
       }
       if (frame.url+(frame.urlFragment || '')!==session.run.topUrl) throw new Error('CDP 최상위 문서가 변경되었습니다.');
+      const token=await pendingToken;
+      if(token?.error){
+        this.invalidateFrames(session,true);
+        if(token.error.waitForPointer&&!prepareInput&&!session.mouseDown&&!session.canceled&&!session.closing&&refresh<3)return this.framePoint(session,local,attemptId,prepareInput,refresh+1);
+        throw token.error;
+      }
       if((session.frameRevision||0)!==revision){
         if(!prepareInput && !session.mouseDown && !session.canceled && !session.closing && refresh<3)return this.framePoint(session,local,attemptId,prepareInput,refresh+1);
         throw pointerError('좌표 확인 중 iframe 문서 정보가 변경되었습니다. 마우스를 다시 이동해 주세요.');
@@ -344,11 +358,13 @@
     }
     async validate(session, request, afterPress = false, prepareInput) {
       const live=this.live(session);
+      const step=session.run.profile?.steps?.[request.intent?.stepIndex??session.run.stepIndex??0];
+      const deferredPressCheck=afterPress&&step?.verify.kind==='newContext'&&step.event==='click';
       // Only the viewport query can start early. Parent geometry and the final
       // pointer check remain after the page response, so delayed replies cannot
       // approve an old iframe position.
       const earlyMetrics=afterPress && request.intent?.lastAttempt?.eventType!=='pointerdown' ? this.command(session,'Page.getLayoutMetrics',{}).then(value=>({value}),error=>({error})) : null;
-      if (afterPress) {
+      if (afterPress&&!deferredPressCheck) {
         // Both reads are independent. The page response alone cannot authorize
         // a release: the live tab/run/document check must finish successfully.
         const [,completed]=await Promise.all([live,Promise.resolve().then(()=>this.wait(this.sendDocument(session,
@@ -379,7 +395,7 @@
       request.mappedPoint ||= mapped;
       // Last RPC rechecks the recorded pointer after the parent geometry queries.
       const result = await this.wait(this.sendDocument(session,
-        {action:'validateCdpTarget',runId:session.run.id,attemptId:request.attemptId}), '클릭 대상 문서 확인');
+        {action:'validateCdpTarget',runId:session.run.id,attemptId:request.attemptId,...(deferredPressCheck?{afterPress:true}:{})}), '클릭 대상 문서 확인');
       if (!result?.success) throw result?.waitForPointer?pointerError(result.error):new Error(result?.error || 'CDP 클릭 직전 마우스 좌표 확인 실패');
       const point = result.point;
       if (!point || point.signature !== request.point.signature || point.x !== request.point.x || point.y !== request.point.y) throw new Error('CDP 클릭 좌표/스크롤/배율이 변경되었습니다. 재클릭하지 않습니다.');
@@ -387,7 +403,7 @@
       if (!viewport || Math.abs(viewport.clientWidth - mapped.viewport.width) > 1 || Math.abs(viewport.clientHeight - mapped.viewport.height) > 1 ||
           Math.abs(viewport.pageX - mapped.viewport.scrollX) > 1 || Math.abs(viewport.pageY - mapped.viewport.scrollY) > 1 ||
           metrics.cssVisualViewport?.scale && Math.abs(metrics.cssVisualViewport.scale - 1) > 0.001) throw new Error('CDP와 DOM의 CSS 픽셀 좌표 체계를 확인할 수 없습니다. pinch zoom/뷰포트 변경을 확인하세요.');
-      if (session.canceled || session.closing) throw new Error('CDP 입력 직전에 중지되었습니다.');
+      if (this.session!==session || session.canceled || session.closing) throw new Error('CDP 입력 직전에 중지되었습니다.');
       return mapped;
     }
     click(request, sender) {

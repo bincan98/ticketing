@@ -62,15 +62,30 @@ chrome.runtime.onConnect?.addListener(port=>{
 const INITIALIZATION_KEYS = ['ticketProfiles', 'activeProfileId', 'profileSchemaVersion', 'nolPreparationRevision', 'executionDefaultsRevision', 'practicketProfileRevision', 'nolGateProfileRevision', 'nolTicketProfileRevision'];
 let cdpRecovery, initialization, stopGeneration = 0;
 let operations = Promise.resolve(),inputWrites=Promise.resolve();
+const inputPayloads=new WeakMap();
 function serial(task) {
   const next = operations.then(task, task); operations = next.catch(() => {}); return next;
 }
 function inputCheckpoint(request,runId) {
-  const logs=request.intent?.checkpointLogs;
-  if(logs===undefined)return null;
-  if(!Array.isArray(logs)||logs.length>500||logs.some(log=>!log||log.runId!==runId||!Number.isFinite(log.timestamp)||typeof log.event!=='string')||JSON.stringify(request.intent).length>65536)
+  const cached=inputPayloads.get(request);
+  if(cached){
+    if(cached.runId!==runId||cached.attemptId!==request.attemptId||cached.intent!==request.intent)throw new Error('검증 후 입력 요청이 변경되었습니다.');
+    return cached.logs;
+  }
+  const intent=request.intent;
+  if(!intent||typeof intent!=='object'||Array.isArray(intent)||JSON.stringify(intent).length>65536)throw new Error('클릭 준비 정보가 현재 실행과 맞지 않습니다. 확장과 페이지를 새로고침하세요.');
+  const logs=intent.checkpointLogs;
+  if(logs!==undefined&&(!Array.isArray(logs)||logs.length>500||logs.some(log=>!log||log.runId!==runId||!Number.isFinite(log.timestamp)||typeof log.event!=='string')))
     throw new Error('입력 checkpoint가 현재 실행과 맞지 않습니다.');
-  return logs;
+  // Chrome supplies an owned JSON message. Seal that one request, so the size
+  // and history proof can be reused without trusting later mutable data.
+  const pending=[intent],seen=new Set();
+  while(pending.length){const value=pending.pop();if(seen.has(value))continue;seen.add(value);
+    for(const child of Object.values(value))if(child&&typeof child==='object')pending.push(child);
+    Object.freeze(value);
+  }
+  inputPayloads.set(request,{runId,attemptId:request.attemptId,intent,logs:logs??null});
+  return logs??null;
 }
 function recordCdpInput(session, request, marker) {
   // Never queue behind a control operation that may be awaiting this CDP
@@ -79,12 +94,10 @@ function recordCdpInput(session, request, marker) {
     const {macroRun}=await chrome.storage.local.get('macroRun');
     if(cdp.session!==session || session.canceled || session.closing || !C.isActive(macroRun) || macroRun.stopRequested ||
         macroRun.status==='stopping' || macroRun.id!==session.run.id || request.runId!==macroRun.id)throw new Error('입력 의도 저장 전에 실행이 중지되거나 변경되었습니다.');
-    const intent=request.intent,attempt=intent?.lastAttempt;
+    const checkpoint=inputCheckpoint(request,macroRun.id),intent=request.intent,attempt=intent?.lastAttempt;
     if(!intent || intent.stepIndex!==macroRun.stepIndex || intent.cycle!==macroRun.cycle ||
         attempt?.runId!==macroRun.id || attempt.event!=='click-attempt' || attempt.clickMethod!=='cdp' || attempt.attemptId!==request.attemptId ||
-        !Number.isFinite(attempt.timestamp) || !Number.isFinite(attempt.actionableDetectedAt) || !Number.isFinite(attempt.actionableMonotonicMs) ||
-        JSON.stringify(intent).length>65536)throw new Error('클릭 준비 정보가 현재 실행과 맞지 않습니다. 확장과 페이지를 새로고침하세요.');
-    const checkpoint=inputCheckpoint(request,macroRun.id);
+        !Number.isFinite(attempt.timestamp) || !Number.isFinite(attempt.actionableDetectedAt) || !Number.isFinite(attempt.actionableMonotonicMs))throw new Error('클릭 준비 정보가 현재 실행과 맞지 않습니다. 확장과 페이지를 새로고침하세요.');
     const {logs,...state}=macroRun;
     await chrome.storage.local.set({macroRun:{...state,status:'verifying',message:String(intent.message||'CDP 입력 준비').slice(0,2000),
       lastAttempt:attempt,lastObservation:intent.lastObservation??state.lastObservation},ticketCdpSession:marker,...(checkpoint?{macroLogs:checkpoint}:{})});

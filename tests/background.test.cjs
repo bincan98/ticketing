@@ -7,7 +7,10 @@ const TicketCapture = require('../capture.js');
 function worker(data = {}, behavior = {}) {
   let onMessage, onConnect, onStartup, onRemoved, onCommitted, onCreated, onStorageChanged, sends = 0;
   const clone = value => JSON.parse(JSON.stringify(value));
-  const context = {URL, crypto, console, setTimeout,clearTimeout, importScripts: () => {}, TicketConfig: C, TicketCapture, TicketAnalysis: require('../analyze.js'), TicketCDP:require('../cdp.js'),
+  const context = {URL, crypto, console, setTimeout,clearTimeout, JSON:{parse:JSON.parse,stringify:(value,...args)=>{
+    if(value===behavior.countIntent)behavior.intentSerializations=(behavior.intentSerializations||0)+1;
+    return JSON.stringify(value,...args);
+  }}, importScripts: () => {}, TicketConfig: C, TicketCapture, TicketAnalysis: require('../analyze.js'), TicketCDP:require('../cdp.js'),
     chrome: {
       runtime: {id:'extension', onMessage:{addListener: fn => onMessage=fn}, onConnect:{addListener:fn=>onConnect=fn}, onInstalled:{addListener:()=>{}}, onStartup:{addListener:fn=>onStartup=fn}},
       storage: {onChanged:{addListener:fn=>onStorageChanged=fn},local: {get: async keys => {
@@ -49,11 +52,13 @@ function worker(data = {}, behavior = {}) {
         return [{frameId:2,documentId:'doc-2'}];
       }}
     }};
-  vm.runInNewContext(fs.readFileSync(require.resolve('../background.js'),'utf8')+';globalThis.testCdp=cdp;globalThis.testRecordInput=recordCdpInput;globalThis.testDocument=sendCdpDocument;',context);
+  vm.runInNewContext(fs.readFileSync(require.resolve('../background.js'),'utf8')+';globalThis.testCdp=cdp;globalThis.testRecordInput=recordCdpInput;globalThis.testDocument=sendCdpDocument;globalThis.testCheckpoint=inputCheckpoint;',context);
   return {data, behavior, sends:()=>sends, request:action=>new Promise(resolve=>onMessage(typeof action==='string'?{action}:action, {id:'extension'}, resolve)),
     startup:()=>onStartup(), removed:id=>onRemoved(id), committed:details=>onCommitted(details), created:tab=>onCreated(tab),
     storageChanged:changes=>onStorageChanged(changes,'local'),
     connect:port=>onConnect(port),
+    prepareInput:(request,runId='run')=>context.testCheckpoint(request,runId),
+    commitInput:(session,request,marker)=>context.testRecordInput(session,request,marker),
     documentSession:()=>{const session={run:data.macroRun,canceled:false,closing:false,worlds:new Map(),ownerCache:new Map(),ownerLoads:new Map(),cacheDisposals:new Set()};context.testCdp.session=session;return {session,request:r=>context.testDocument(session,r),click:fn=>{context.testCdp.click=fn;}};},
     inputCommit:(request,marker,flags={})=>{
       const session={run:data.macroRun,canceled:false,closing:false,worlds:new Map(),ownerCache:new Map(),ownerLoads:new Map(),cacheDisposals:new Set(),...flags};context.testCdp.session=session;
@@ -127,11 +132,43 @@ test('foreign promoted history is rejected before a storage write',async()=>{
   const {data,request,marker}=inputData(),w=worker(data);request.intent.checkpointLogs=[{runId:'foreign',timestamp:1,event:'history'}];
   await assert.rejects(w.inputCommit(request,marker).flight,/checkpoint/);assert.equal(w.behavior.writes,undefined);
 });
+test('a single owned input payload is size-checked once and sealed through its durable claim',async()=>{
+  const {data,request,marker}=inputData();request.intent.checkpointLogs=[{runId:'run',timestamp:1,event:'button-rebound',detail:{text:'예매'}}];
+  const behavior={countIntent:request.intent},w=worker(data,behavior),{session}=w.documentSession();
+  w.prepareInput(request);w.prepareInput(request);
+  assert.equal(behavior.intentSerializations,1);assert(Object.isFrozen(request.intent));assert(Object.isFrozen(request.intent.lastAttempt));
+  assert(Object.isFrozen(request.intent.checkpointLogs[0].detail));assert.equal(Reflect.set(request.intent.lastAttempt,'attemptId','changed'),false);
+  await w.commitInput(session,request,marker);assert.equal(behavior.intentSerializations,1);assert.equal(behavior.writes.length,1);
+  assert.equal(data.macroRun.lastAttempt.attemptId,'attempt');assert.equal(data.macroLogs[0].detail.text,'예매');
+});
+for(const mutation of ['intent','attempt','run'])test('a validated request cannot change '+mutation+' before its claim',async()=>{
+  const {data,request,marker}=inputData(),w=worker(data),{session}=w.documentSession();w.prepareInput(request);
+  if(mutation==='intent')request.intent={...request.intent};
+  if(mutation==='attempt')request.attemptId='replacement';
+  if(mutation==='run')assert.throws(()=>w.prepareInput(request,'foreign'),/변경/);
+  else await assert.rejects(w.commitInput(session,request,marker),/검증 후/);
+  assert.equal(w.behavior.writes,undefined);
+});
+test('large or malformed histories remain rejected before a claim',async()=>{
+  for(const kind of ['oversize','too-many','bad-time','bad-event']){
+    const {data,request,marker}=inputData(),w=worker(data);
+    request.intent.checkpointLogs=kind==='too-many'?Array.from({length:501},()=>({runId:'run',timestamp:1,event:'log'})):
+      [{runId:'run',timestamp:kind==='bad-time'?null:1,event:kind==='bad-event'?null:'log',detail:kind==='oversize'?'x'.repeat(66000):''}];
+    await assert.rejects(w.inputCommit(request,marker).flight,/준비 정보|checkpoint/);assert.equal(w.behavior.writes,undefined);
+  }
+});
+test('a frozen input proof still rechecks the newest stop and step state',async()=>{
+  for(const kind of ['stop','step']){
+    const {data,request,marker}=inputData(),w=worker(data),{session}=w.documentSession();w.prepareInput(request);
+    if(kind==='stop')data.macroRun.stopRequested=true;else data.macroRun.stepIndex=1;
+    await assert.rejects(w.commitInput(session,request,marker),/중지|클릭 준비/);assert.equal(w.behavior.writes,undefined);
+  }
+});
 test('a bound command uses its authenticated sender once and cannot replay',async()=>{
   const w=worker(activeData()),d=w.documentSession(),p=documentPort();let calls=0,complete;
   d.click((request,sender)=>{calls++;assert.equal(sender.documentId,'doc-2');return new Promise(resolve=>{complete=resolve;});});
   w.connect(p.port);p.receive({kind:'bind',runId:'run'});
-  const message={kind:'command',id:1,runId:'run',request:{action:'cdpClick',runId:'run'}};
+  const message={kind:'command',id:1,runId:'run',request:{action:'cdpClick',runId:'run',intent:inputData().request.intent}};
   p.receive(message);p.receive(message);await new Promise(setImmediate);assert.equal(calls,1);
   p.receive({...message,id:2});assert.equal(p.sent.at(-1).result.success,false);assert.equal(calls,1);
   complete({success:true});await new Promise(setImmediate);assert(p.sent.some(m=>m.kind==='command-result'&&m.id===1&&m.result.success));

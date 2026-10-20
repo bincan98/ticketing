@@ -64,5 +64,5 @@ const report={createdAt:new Date().toISOString(),fixtureResponses:true,liveBooki
   await popup.screenshot({path:path.resolve(__dirname,'popup-2.2.9-nol-tabs.png'),fullPage:true});note('reopening A imports A while the closed B run is labelled as history');
   report.pageInputs=await reopened.evaluate(()=>inputs.length);assert.equal(report.pageInputs,0);
 })().catch(error=>{report.error=error.stack;console.error(error);process.exitCode=1;}).finally(async()=>{
-  report.summary={passed:report.cases.length,error:report.error||null};fs.writeFileSync(path.resolve(__dirname,'nol-tabs-results.json'),JSON.stringify(report,null,2));await closeTemporaryContext(context,temporaryProfile);
+  report.summary={passed:report.cases.length,error:report.error||null};fs.writeFileSync(path.resolve(__dirname,path.basename(process.env.TICKET_TABS_REPORT||'nol-tabs-results.json')),JSON.stringify(report,null,2));await closeTemporaryContext(context,temporaryProfile);
 });
