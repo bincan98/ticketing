@@ -1,0 +1,16 @@
+{
+  "name": "ticket-click-extension",
+  "version": "2.2.20",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build-extension.cjs",
+    "package": "node scripts/package-extension.cjs",
+    "check:release": "node scripts/check-release.cjs",
+    "test": "node --test tests/config.test.cjs tests/background.test.cjs tests/popup.test.cjs tests/cdp.test.cjs tests/startup.test.cjs tests/pointer.test.cjs tests/temporary-profile.test.cjs tests/release.test.cjs",
+    "test:chrome": "node tests/chrome-input.test.cjs",
+    "test:nol-tabs": "node tests/nol-tabs.test.cjs",
+    "test:nol-countdown": "node tests/nol-countdown.test.cjs",
+    "serve-tests": "node tests/server.cjs"
+  },
+  "devDependencies": {"fflate": "0.8.3", "playwright": "1.62.1"}
+}

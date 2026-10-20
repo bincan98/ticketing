@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>티켓 예매 자동 클릭</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h2>🎟 티켓 예매 자동 클릭 <small>v2.2.20</small></h2>
+  <div class="button-group"><button id="start" type="button" disabled>실제 클릭 시작 ▶</button><button id="stop" type="button" disabled>중지 ■</button></div>
+  <p class="status-label">실행 상태 · 최근 실행 결과 포함</p>
+  <div id="status" role="status" class="info">설정 불러오는 중…</div>
+  <div id="preparationStatus" class="notice info" role="status" aria-live="polite" hidden></div>
+  <div id="saveStatus" class="notice info" role="status" aria-live="polite" hidden></div>
+  <p class="hint">로그인은 직접 진행하세요. 시작은 현재 탭에서 실행됩니다.</p>
+  <p id="tabContext" class="hint tab-context" role="status" aria-live="polite"></p>
+  <div class="small-buttons"><button id="captureTab" type="button">현재 탭에서 URL·예매 버튼 가져오기</button></div>
+  <section class="analysis-section" aria-labelledby="analysisHeading" hidden>
+    <h3 id="analysisHeading">현재 페이지의 URL · 버튼</h3>
+    <div class="small-buttons">
+      <button id="analyzePage" type="button">현재 웹페이지 분석</button>
+      <button id="copyAnalysis" type="button" disabled>전체 결과 복사</button>
+    </div>
+    <p class="hint">현재 활성 Chrome 탭을 읽습니다. 매크로 실행 중에는 중지 후 분석하세요.</p>
+    <p id="analysisStatus" class="hint" role="status" aria-live="polite"></p>
+    <div id="analysisResult" hidden>
+      <p id="analysisUrl"></p><p id="analysisSummary"></p>
+      <ol id="analysisButtons" aria-label="수집한 버튼 목록"></ol>
+      <details><summary>프레임 · 누락 사유 · 확인 범위</summary>
+        <ul id="analysisFrames"></ul><p id="analysisNotes" class="hint"></p>
+      </details>
+    </div>
+  </section>
+  <fieldset id="configuration">
+    <label for="profile">사이트 선택</label>
+    <select id="profile"></select>
+    <p class="hint">사이트 선택은 변경 즉시 자동 저장됩니다.</p>
+    <label for="siteUrl">설정 사이트 URL · 버튼 수집 성공 시 갱신</label><input id="siteUrl" type="url" placeholder="https://…">
+    <p class="hint">접근 권한이 있으면 자동으로 가져옵니다. 실제 클릭 시작에서 권한 확인 → 재수집 → 검증 → 저장 후 감시합니다.</p>
+    <div id="captureChoices" hidden>
+      <label for="captureChoice">가져올 예매 버튼</label><select id="captureChoice"></select>
+      <button id="applyCapture" type="button">선택한 버튼 가져오기</button>
+    </div>
+    <p id="capturedSummary" class="hint" hidden></p>
+    <p id="profileHelp" class="hint" hidden></p>
+    <!-- Legacy schedule scanning/selection disabled in 2.1.4. Open the gate manually.
+    <div id="nolControls" hidden>
+      <label for="nolGame">NOL 예매할 경기</label>
+      <select id="nolGame"><option value="">현재 탭 경기 목록을 불러와 선택하세요</option></select>
+      <div class="small-buttons"><button id="loadNolGames" type="button">현재 탭 경기 목록 불러오기</button></div>
+      <p id="nolSelection" class="hint">경기명과 날짜가 일치하는 버튼 하나만 클릭합니다.</p>
+    </div>
+    -->
+    <p class="hint">CDP 마우스 클릭 · 1회 실행 · 버튼 활성화 최대 2분 감시</p>
+    <p id="cdpHelp" class="hint" hidden><strong>예매 버튼에 마우스를 이동해 주세요.</strong> 시작 후 Esc로 Popup을 닫고 클릭할 위치에 커서를 두세요. 예매 버튼 여부를 검사하지 않고, 감시 버튼 활성화/예약 조건 충족 시 기록된 현재 위치에 CDP 눌림·놓임을 보냅니다. 다른 요소 위에 두면 그 요소에 입력됩니다. 화면·iframe 위치가 바뀌면 마우스를 다시 이동해 주세요. debugger 권한과 탭 연결이 필요하며 F12와 충돌할 수 있습니다.</p>
+    <label for="mode">감시 실행 방식</label>
+    <select id="mode"><option value="activation">버튼 활성화 감지 즉시 (기본)</option><option value="hybrid">예약 시각 + 버튼 활성화 감지 즉시</option></select>
+    <div id="scheduleSettings" hidden>
+      <label for="scheduledAt">예약 시각 (PC의 로컬 시간)</label><input id="scheduledAt" type="datetime-local" step="0.001">
+      <p class="hint">기본값은 현재 날짜·시·분의 00초 000ms입니다. 예약 실행은 미래 시각으로 지정하세요.</p>
+      <p class="hint">예약 시각 전에는 클릭하지 않습니다. 서버 시계가 다르면 PC 기준으로 환산하세요.</p>
+      <label for="prepareSeconds">감시 시작: 예약 몇 초 전</label><input id="prepareSeconds" type="number" min="0" max="3600" value="30">
+    </div>
+    <p id="timingHint" class="hint"></p>
+    <div class="small-buttons"><button id="save" type="button">설정 저장</button><button id="openSite" type="button">사이트 열기</button></div>
+  </fieldset>
+  <div class="log-section"><div class="log-header"><h3>📋 실행 로그</h3><div class="small-buttons"><button id="clearLog">삭제</button><button id="downloadLog">CSV 다운로드</button></div></div>
+    <div id="performance"></div><div id="logBox"></div>
+  </div>
+  <fieldset id="advancedConfiguration" class="advanced-settings">
+    <details><summary>프레임 · Selector · 클릭 단계 편집</summary>
+    <label class="check"><input id="exactSearch" type="checkbox">URL 쿼리 문자열까지 일치해야 실행</label>
+    <label for="frameUrl">클릭할 iframe origin (없으면 최상위 문서)</label>
+    <input id="frameUrl" placeholder="https://실제-프레임-호스트">
+    <label for="scope">관찰 영역 Selector</label><input id="scope" placeholder="DOM에서 확인한 작은 컨테이너">
+    <label for="safety">안전 종료 Selector (한 줄에 하나)</label><textarea id="safety" rows="2"></textarea>
+    <p class="hint">이 영역이 보이면 종료합니다. 대기열·CAPTCHA·접근 제한을 지정하세요.</p>
+    <div class="step-heading"><label>클릭 순서</label><button id="addStep" type="button">단계 추가</button></div>
+    <div id="steps"></div>
+    </details>
+  </fieldset>
+  <template id="stepTemplate">
+    <div class="step-card">
+      <div class="step-heading"><strong class="step-number"></strong><div class="small-buttons"><button type="button" data-move="-1" title="위로">↑</button><button type="button" data-move="1" title="아래로">↓</button><button type="button" data-remove>삭제</button></div></div>
+      <label>단계 이름<input data-field="name" maxlength="100"></label>
+      <label>클릭 Selector<input data-field="selector" placeholder="실제 DOM에서 확인한 Selector"></label>
+      <label>경기 컨테이너 Selector (선택)<input data-field="containerSelector"></label>
+      <label>경기 식별 텍스트 (한 줄당 모두 일치)<textarea data-field="targetText" rows="2"></textarea></label>
+      <label>버튼 텍스트 정확히 일치 (선택)<input data-field="buttonText"></label>
+      <label>추가 활성 조건 Selector (선택)<input data-field="readySelector" placeholder="대상 버튼 자신에 적용할 조건"></label>
+      <div class="grid"><label>이벤트<select data-field="event"><option value="click">click</option><option value="pointerdown">pointerdown</option></select></label>
+        <label>버튼 감시 (ms, 2분 고정)<input data-field="timeoutMs" type="number" value="120000" readonly></label></div>
+      <label>클릭 후 완료 검증<select data-field="verify.kind"><option value="appeared">표시됨 (전에는 안 보여야 함)</option><option value="disappeared">사라짐 (전에는 보여야 함)</option><option value="textChanged">텍스트가 새로 변경됨</option><option value="textIncludes">새 완료 텍스트 포함</option><option value="attributeEquals">속성이 새 완료 값으로 변경</option><option value="newContext">새 창/화면 이동 확인 후 종료 (한 번 실행)</option></select></label>
+      <label>완료 Selector<input data-field="verify.selector"></label>
+      <div class="grid"><label>완료 값 / 텍스트<input data-field="verify.value"></label><label>검증 속성<input data-field="verify.attribute" placeholder="attributeEquals일 때"></label></div>
+      <label>완료 대기 (ms)<input data-field="verify.timeoutMs" type="number" min="100" max="300000"></label>
+    </div>
+  </template>
+  <script src="shared.js"></script><script src="analyze.js"></script><script src="popup.js"></script>
+</body>
+</html>

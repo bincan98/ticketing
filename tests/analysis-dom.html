@@ -1,0 +1,22 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><title>읽기 전용 웹페이지 분석 DOM 테스트</title>
+<style>body{font:14px system-ui;margin:20px}button,input{margin:4px;min-height:30px}iframe{width:400px;height:90px}.hidden{display:none}.fail{color:#b00}.pass{color:#070}#offscreen{margin-top:1200px}</style>
+<h1>웹페이지 분석 DOM 테스트</h1><ol id="results"></ol><p id="summary">검증 중…</p>
+<div id="scope">
+<button id="enabled">예매 <span hidden>숨은 글자</span> 시작</button>
+<button id="disabled" disabled>아직 예매 불가</button>
+<fieldset disabled><button id="fieldset">상속 비활성</button></fieldset>
+<div aria-disabled="true"><button id="aria">ARIA 상속</button></div>
+<div inert><button id="inert">inert 버튼</button></div>
+<button id="pointer" style="pointer-events:none">포인터 비활성</button>
+<input type="submit" value="신청하기" id="submit">
+<div role="button" id="role" tabindex="0">역할 버튼</div>
+<button id="icon" aria-label="닫기"></button>
+<button id="hidden" hidden>숨김</button><div style="opacity:0"><button id="transparent">투명</button></div>
+<button id="visibility" style="visibility:hidden">숨긴 상태</button>
+<div style="visibility:hidden"><button id="override" style="visibility:visible">표시 재정의</button></div>
+<div id="shadow"></div><div id="closed"></div><div id="hostButton" role="button"></div>
+<iframe id="frame" srcdoc="<button>iframe 버튼</button><script src='/analyze.js'></script>"></iframe>
+<iframe id="hiddenFrame" style="display:none" srcdoc="<button>숨긴 iframe</button>"></iframe>
+<button id="offscreen">스크롤 아래 버튼</button>
+</div>
+<script src="/analyze.js"></script><script src="analysis-dom-tests.js"></script></html>

@@ -1,0 +1,6 @@
+# Preserve the tested runtime bytes in clones and release ZIPs on Windows.
+*.js -text
+*.cjs -text
+*.json -text
+*.html -text
+*.css -text

@@ -1,0 +1,38 @@
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; padding: 18px; width: 480px; font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Malgun Gothic', sans-serif; color: #1d1d1f; background: #f5f5f7; }
+h2 { font-size: 18px; margin: 0 0 8px; } h3 { font-size: 13px; margin: 0; }
+label { display: block; color: #444; margin: 10px 0 4px; font-weight: 600; }
+input, select, textarea { display: block; width: 100%; border: 1px solid #c7c7cc; border-radius: 6px; padding: 8px; font: inherit; background: white; color: #1d1d1f; }
+textarea { resize: vertical; } input[type=checkbox] { width: auto; margin: 0; }
+details { margin-top: 10px; } summary { cursor: pointer; color: #005bb7; padding: 8px 0; font-weight: 600; }
+.check { display: flex; gap: 8px; align-items: center; }
+.hint { margin: 5px 0 10px; font-size: 12px; color: #666; }
+fieldset { border: none; padding: 0; margin: 0; } fieldset:disabled { opacity: .65; }
+.advanced-settings { margin-top: 12px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+button { padding: 9px 12px; border: 1px solid #b8cde8; border-radius: 6px; font: inherit; font-weight: 600; cursor: pointer; color: #005bb7; background: #e8f0ff; }
+button:hover { filter: brightness(.97); } button:disabled { opacity: .5; cursor: not-allowed; }
+.small-buttons { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; } .small-buttons button { padding: 6px 9px; font-size: 12px; }
+.button-group { display: flex; gap: 8px; margin: 10px 0 12px; } .button-group button { flex: 1; padding: 12px; }
+#start { background: #0071e3; color: white; } #stop { background: white; color: #1d1d1f; border-color: #d2d2d7; }
+#status { padding: 10px; border-radius: 6px; border: 1px solid #90caf9; background: #e3f2fd; color: #1565c0; overflow-wrap: anywhere; }
+#status.error { background: #fce8e6; border-color: #f4c7c3; color: #6f322c; } #status.success { background: #ecf5e8; border-color: #b8e6b8; color: #3d6e3f; }
+.notice { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: #e3f2fd; color: #1565c0; overflow-wrap: anywhere; }
+.notice.error { background: #fce8e6; color: #6f322c; } .notice.success { background: #ecf5e8; color: #3d6e3f; }
+.status-label { margin: 6px 0 4px; color: #666; font-size: 11px; }
+.tab-context { white-space: pre-line; overflow-wrap: anywhere; }
+.step-card { border: 1px solid #d2d2d7; border-radius: 8px; padding: 10px; margin: 8px 0; background: #fff; }
+.step-heading, .log-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.log-section { margin-top: 18px; border-top: 1px solid #d2d2d7; padding-top: 12px; }
+#logBox { border: 1px solid #d2d2d7; background: #fff; padding: 8px; height: 180px; overflow-y: auto; border-radius: 6px; font: 11px/1.5 Consolas, monospace; }
+.log-entry { padding: 4px 0; border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
+.log-time { color: #777; } .log-success { color: #3d6e3f; } .log-error { color: #6f322c; } .log-warning { color: #9c6c00; } .log-info { color: #1565c0; }
+#performance { font-size: 12px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+
+.analysis-section { border: 1px solid #d2d2d7; background: white; border-radius: 8px; padding: 10px; margin: 12px 0; }
+#analysisUrl, #analysisFrames, #analysisNotes, #analysisButtons .hint { overflow-wrap: anywhere; white-space: pre-wrap; }
+#analysisUrl { font-size: 12px; }
+#analysisButtons { max-height: 260px; overflow: auto; padding-left: 24px; }
+#analysisButtons li, #analysisFrames li { padding: 6px 0; border-bottom: 1px solid #eee; }
+#analysisFrames { padding-left: 18px; font-size: 11px; }

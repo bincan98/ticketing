@@ -1,0 +1,51 @@
+name: Publish extension ZIP
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag, for example v2.2.20'
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: Validate tag format
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+(\.[0-9]+){0,3}$') { throw 'Invalid version tag.' }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - name: Check version
+        id: version
+        run: node scripts/check-release.cjs --tag "$env:RELEASE_TAG"
+      - run: npm test
+      - name: Build and verify ZIP
+        shell: pwsh
+        run: node scripts/package-extension.cjs --tag "$env:RELEASE_TAG"
+      - name: Create draft with all assets, then publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_ZIP: ${{ steps.version.outputs.zip }}
+        run: |
+          gh release create $env:RELEASE_TAG "dist/$env:VERSION_ZIP" "dist/ticket-click-extension.zip" "dist/SHA256SUMS.txt" --repo $env:GITHUB_REPOSITORY --verify-tag --draft --title "Ticketing $env:RELEASE_TAG" --notes-file .github/RELEASE_NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed. Existing assets were not overwritten.' }
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release is still a draft; inspect the attached assets before publishing.' }

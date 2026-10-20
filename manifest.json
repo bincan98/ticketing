@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "티켓 예매 자동 클릭",
+  "version": "2.2.20",
+  "minimum_chrome_version": "125",
+  "description": "예약 시각과 DOM 활성화 감지를 결합하는 프로필 기반 자동 클릭 도구",
+  "permissions": ["activeTab", "scripting", "storage", "webNavigation", "debugger"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "티켓 예매 자동 클릭" }
+}

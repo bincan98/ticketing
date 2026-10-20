@@ -1,0 +1,9 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><title>JavaScript / CDP 입력 비교</title>
+<style>body{font:14px system-ui;margin:24px;max-width:920px}button{padding:12px;margin:5px}#scope{padding:20px;border:1px solid #aaa}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f4f5;padding:12px}iframe{margin:20px;border:5px solid #aaa;width:600px;height:600px}#cover{position:fixed;inset:0;background:rgba(50,50,50,.6);z-index:999}</style>
+<h1>JavaScript / CDP 입력 비교</h1>
+<p>로컬 전용 검증 화면입니다. 확장 프로그램에서 URL·Selector를 이 화면에 맞추고 실제 클릭 모드로 실행한 뒤 버튼을 활성화하세요. 테스트 모드는 입력을 보내지 않습니다.</p>
+<div><button id="activate">버튼 활성화</button><button id="direct">JavaScript 직접 클릭 비교</button><button id="reset">기록 초기화</button></div>
+<p id="state">비활성 버튼 대기</p><div id="mount"></div><pre id="events">이벤트 기록 대기</pre>
+<p>일반 GET에는 이벤트 속성을 싣지 않습니다. 이 테스트 페이지가 별도로 보낸 telemetry POST에만 isTrusted와 이벤트 기록이 들어갑니다. 서버 관찰 결과는 확장 설치 유무·디버거 연결의 보편적인 탐지 가능성이나 탐지 회피 보장을 뜻하지 않습니다.</p>
+<script src="input-lab.js"></script></html>
+
