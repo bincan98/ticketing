@@ -21,7 +21,7 @@ let context,profile;
   if(!server.listening)await once(server,'listening');
   const base='http://127.0.0.1:'+server.address().port;
   const extension=path.resolve(__dirname,'.extension-under-test');fs.mkdirSync(extension,{recursive:true});
-  for(const file of ['background.js','shared.js','capture.js','analyze.js','cdp.js','content.js','popup.html','popup.js','popup.css'])fs.copyFileSync(path.resolve(__dirname,'..',file),path.join(extension,file));
+  for(const file of ['background.js','shared.js','capture.js','analyze.js','cdp.js','content.js','popup.html','popup.js','popup.css',...require('../scripts/runtime-files.cjs').filter(f=>f.startsWith('repeat-'))])fs.copyFileSync(path.resolve(__dirname,'..',file),path.join(extension,file));
   if(process.env.TICKET_BACKGROUND_SOURCE){
     const source=fs.realpathSync(process.env.TICKET_BACKGROUND_SOURCE),data=fs.readFileSync(source);
     fs.writeFileSync(path.join(extension,'background.js'),data);

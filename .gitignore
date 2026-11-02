@@ -53,3 +53,4 @@ tests/.extension-under-test/
 !/tests/*.html
 !/tests/temporary-profile.cjs
 !/tests/server.cjs
+!/tests/build-integrated-fixture.cjs

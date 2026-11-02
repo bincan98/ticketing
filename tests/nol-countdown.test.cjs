@@ -19,7 +19,7 @@ globalThis.activate=()=>{clearInterval(clock);activationAt=performance.now();boo
 </script>`;
 (async()=>{
   const extension=path.resolve(__dirname,'.extension-under-test');fs.mkdirSync(extension,{recursive:true});
-  for(const file of ['background.js','shared.js','capture.js','analyze.js','cdp.js','content.js','popup.html','popup.js','popup.css'])fs.copyFileSync(path.resolve(__dirname,'..',file),path.join(extension,file));
+  for(const file of ['background.js','shared.js','capture.js','analyze.js','cdp.js','content.js','popup.html','popup.js','popup.css',...require('../scripts/runtime-files.cjs').filter(f=>f.startsWith('repeat-'))])fs.copyFileSync(path.resolve(__dirname,'..',file),path.join(extension,file));
   for(const [file,variable,key] of [['background.js','TICKET_BACKGROUND_SOURCE','backgroundSourceOverride'],['cdp.js','TICKET_INPUT_CDP_SOURCE','cdpSourceOverride']])if(process.env[variable]){
     const source=fs.realpathSync(process.env[variable]),data=fs.readFileSync(source);
     fs.writeFileSync(path.join(extension,file),data);

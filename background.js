@@ -1,6 +1,6 @@
 /* DOM detection stays in the document. CDP is the optional final input transport. */
 'use strict';
-importScripts('shared.js', 'capture.js', 'analyze.js', 'cdp.js');
+importScripts('shared.js', 'capture.js', 'analyze.js', 'cdp.js', 'repeat-sites.js', 'repeat-results.js');
 const C = TicketConfig;
 const cdp = new TicketCDP.Controller(chrome, (run, message) => terminal(run, 'interrupted', message), recordCdpInput, sendCdpDocument);
 const documentChannels=new Map();
@@ -119,6 +119,7 @@ function initialize() {
   return initialization ||= initializeOnce().catch(error => { initialization = null; throw error; });
 }
 async function initializeOnce() {
+  await globalThis.TicketRepeatEngine?.ready;
   await (cdpRecovery ||= cdp.recover().catch(error => { cdpRecovery = null; throw error; }));
   const data = await chrome.storage.local.get(INITIALIZATION_KEYS);
   let profiles = data.ticketProfiles;
@@ -283,6 +284,7 @@ function profileSignature(profile) {
     Object.fromEntries(Object.keys(value).sort().map(name=>[name,value[name]])) : value);
 }
 async function validatePreparedStart(profile, captureTarget) {
+  if(globalThis.TicketRepeatEngine?.isActive())throw new Error('반복 입력을 먼저 중지하세요.');
   if (C.isActive(await reconcile())) throw new Error('이미 실행 중입니다. 먼저 중지하세요.');
   const p = C.validateForRun(profile), target = await prepareActive(p);
   assertCapturedTarget(target, captureTarget);
@@ -291,6 +293,8 @@ async function validatePreparedStart(profile, captureTarget) {
   return {success:true};
 }
 async function start(generation = stopGeneration, captureTarget, expectedProfile) {
+  if(globalThis.TicketRepeatEngine?.isActive())throw new Error('반복 입력을 먼저 중지하세요.');
+  await globalThis.TicketRepeatEngine?.clearPresentation?.();
   if (C.isActive(await reconcile())) throw new Error('이미 실행 중입니다. 먼저 중지하세요.');
   const data = await chrome.storage.local.get(['ticketProfiles', 'activeProfileId', 'ticketClickMethod']);
   const profile = C.validateForRun(data.ticketProfiles.find(p => p.id === data.activeProfileId));
@@ -498,7 +502,25 @@ async function analyzeCurrentPage() {
 
 async function dispatch(request) {
   await initialize();
-  if (request.action === 'getSettings') return {success: true, ...await chrome.storage.local.get(['ticketProfiles', 'activeProfileId', 'macroLogs', 'ticketClickMethod']), run: await visibleRun(await reconcile()), currentTab:await activeTabInfo()};
+  const repeat=globalThis.TicketRepeatEngine;
+  if(request.action==='setExecutionMode'){
+    if(!['detect','repeat'].includes(request.value))throw Error('지원하지 않는 실행 모드입니다.');
+    if(repeat?.isActive()||C.isActive(await reconcile()))throw Error('실행을 중지한 뒤 모드를 변경하세요.');
+    if(request.value==='detect')await repeat?.clearPresentation?.();
+    await chrome.storage.local.set({ticketExecutionMode:request.value});return {success:true};
+  }
+  if(request.action==='repeatPracticeStatus')return {success:true,state:await repeat.status()};
+  if(request.action==='repeatPracticePrepare'){
+    if(request.expectedStopGeneration!==stopGeneration)throw Error('준비 중 사용자가 중지했습니다.');
+    if(C.isActive(await reconcile())||cdp.session)throw Error('기존 매크로를 먼저 중지하세요.');
+    await chrome.storage.local.set({ticketExecutionMode:'repeat'});
+    await repeat.prepare(request.mode,request.expectedTarget);
+    if(request.expectedStopGeneration!==stopGeneration){await repeat.stop();throw Error('준비 중 사용자가 중지했습니다.');}
+    return {success:true,state:await repeat.status()};
+  }
+  if(request.action==='repeatPracticeStop'){await repeat.stop();return {success:true,state:await repeat.status()};}
+  if(repeat?.isActive()&&['setClickMethod','selectProfile','saveProfiles','captureCurrentTab','analyzeCurrentPage','inspectFrames','clearLogs'].includes(request.action))throw Error('반복 입력을 먼저 중지하세요.');
+  if (request.action === 'getSettings') return {success: true, ...await chrome.storage.local.get(['ticketProfiles', 'activeProfileId', 'macroLogs', 'ticketClickMethod','ticketExecutionMode']), repeatState:await repeat?.status(), run: await visibleRun(await reconcile()), currentTab:await activeTabInfo()};
   if (request.action === 'getTabContext') return {success:true,run:await visibleRun(await reconcile()),currentTab:await activeTabInfo()};
   if (request.action === 'setClickMethod') {
     if (C.isActive(await reconcile())) throw new Error('실행을 중지한 뒤 클릭 방식을 변경하세요.');
@@ -528,7 +550,7 @@ async function dispatch(request) {
   }
   if (request.action === 'validatePreparedStart') return validatePreparedStart(request.profile, request.captureTarget);
   if (request.action === 'startMacro') return start(request.expectedStopGeneration, request.captureTarget, request.expectedProfile);
-  if (request.action === 'stopMacro') return stop();
+  if (request.action === 'stopMacro') {const result=await stop();await repeat?.stop();return result;}
   if (request.action === 'captureCurrentTab') {
     try { return {...await captureCurrentTab(request.profile),currentTab:await activeTabInfo()}; }
     catch(error) { return {success:false,error:error.message,currentTab:await activeTabInfo()}; }
@@ -572,8 +594,8 @@ chrome.runtime.onMessage.addListener((request, sender, respond) => {
     return true;
   }
   if (sender.id !== chrome.runtime.id || sender.tab && !extensionPage) return false;
-  if (request.action === 'stopMacro') { stopGeneration++;if(cdp.session)cdp.session.userStopRequested=true;cdp.cancel(); }
-  const queued = request.action === 'startMacro' ? {...request,expectedStopGeneration:stopGeneration} : request;
+  if (request.action === 'stopMacro' || request.action === 'repeatPracticeStop') { stopGeneration++;globalThis.TicketRepeatEngine?.requestStop();if(request.action==='stopMacro'){if(cdp.session)cdp.session.userStopRequested=true;cdp.cancel();} }
+  const queued = ['startMacro','repeatPracticePrepare'].includes(request.action) ? {...request,expectedStopGeneration:stopGeneration} : request;
   serial(() => dispatch(queued)).then(respond, e => respond({success: false, error: e.message}));
   return true;
 });
@@ -627,3 +649,5 @@ chrome.webNavigation.onCommitted.addListener(details => { serial(async () => {
       '클릭 후 화면 이동을 확인했습니다. 이후 예매 절차는 직접 진행하세요.' : '페이지/iframe 이동: 완료를 확인할 수 없어 종료했습니다.');
   }
 }).catch(console.error); });
+
+importScripts('repeat-worker.js');

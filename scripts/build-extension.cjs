@@ -6,8 +6,7 @@ const {createHash} = require('node:crypto');
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'dist', 'ticket-click-extension');
 // Explicit runtime allowlist: never copy tests, profiles, logs, or backups.
-const files = ['manifest.json', 'background.js', 'shared.js', 'capture.js',
-  'analyze.js', 'cdp.js', 'content.js', 'popup.html', 'popup.js', 'popup.css'];
+const files=require('./runtime-files.cjs');
 const hash = data => createHash('sha256').update(data).digest('hex');
 
 function build() {

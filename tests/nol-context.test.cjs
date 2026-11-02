@@ -3,7 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),{createHash}=require('node:crypto');
 const {chromium}=require('playwright'),C=require('../shared.js'),{createTemporaryProfile,closeTemporaryContext}=require('./temporary-profile.cjs');
 const root=path.resolve(__dirname,'..'),origin='https://tickets.interpark.com',gate=origin+'/gates/ticket/26014584?fixture=speed-review';
-const runtime=['background.js','shared.js','capture.js','analyze.js','cdp.js','content.js','popup.html','popup.js','popup.css'];
+const runtime=['background.js','shared.js','capture.js','analyze.js','cdp.js','content.js','popup.html','popup.js','popup.css',...require('../scripts/runtime-files.cjs').filter(f=>f.startsWith('repeat-'))];
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const repeat=Number(process.env.TICKET_CONTEXT_REPEAT||1),tracing=process.env.TICKET_CONTEXT_TRACE!=='0',expectedRpc=Number(process.env.TICKET_CONTEXT_POST_RPC||1);
 assert(Number.isInteger(repeat)&&repeat>0&&repeat<=50);

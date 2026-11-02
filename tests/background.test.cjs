@@ -10,7 +10,7 @@ function worker(data = {}, behavior = {}) {
   const context = {URL, crypto, console, setTimeout,clearTimeout, JSON:{parse:JSON.parse,stringify:(value,...args)=>{
     if(value===behavior.countIntent)behavior.intentSerializations=(behavior.intentSerializations||0)+1;
     return JSON.stringify(value,...args);
-  }}, importScripts: () => {}, TicketConfig: C, TicketCapture, TicketAnalysis: require('../analyze.js'), TicketCDP:require('../cdp.js'),
+  }}, importScripts: () => {}, TicketConfig: C, TicketCapture, TicketAnalysis: require('../analyze.js'), TicketCDP:require('../cdp.js'),TicketRepeatEngine:behavior.repeatEngine,
     chrome: {
       runtime: {id:'extension', onMessage:{addListener: fn => onMessage=fn}, onConnect:{addListener:fn=>onConnect=fn}, onInstalled:{addListener:()=>{}}, onStartup:{addListener:fn=>onStartup=fn}},
       storage: {onChanged:{addListener:fn=>onStorageChanged=fn},local: {get: async keys => {
@@ -650,3 +650,12 @@ test('iframe observed in DOM but absent from navigation inventory has a missing-
   const {analysis}=await worker({},behavior).request('analyzeCurrentPage');
   assert.equal(analysis.partial,true);assert.match(analysis.frames[0].warnings[0],/iframe.*연결하지 못/);
 });
+
+function repeatStub(active=false){let running=active;return{ready:Promise.resolve(),isActive:()=>running,prepare:async()=>{running=true;},requestStop(){running=false;},stop:async()=>{running=false;},status:async()=>({status:running?'armed':'stopped'})};}
+test('an armed repeat engine blocks legacy start and validation',async()=>{const w=worker({}, {repeatEngine:repeatStub(true)});for(const action of ['startMacro','validatePreparedStart']){const r=await w.request({action});assert.equal(r.success,false);assert.match(r.error,/반복 입력/);}assert.equal(w.behavior.injections,undefined);});
+test('repeat mode selection is persistent and preserves profiles',async()=>{const engine=repeatStub(),w=worker({}, {repeatEngine:engine});const before=(await w.request('getSettings')).ticketProfiles;assert((await w.request({action:'setExecutionMode',value:'repeat'})).success);assert.equal(w.data.ticketExecutionMode,'repeat');assert.deepEqual(w.data.ticketProfiles,before);});
+test('mode changes and edits are refused while repeat is armed',async()=>{const w=worker({}, {repeatEngine:repeatStub(true)});for(const action of ['setExecutionMode','selectProfile','captureCurrentTab','saveProfiles']){const r=await w.request({action,value:'detect'});assert.equal(r.success,false);assert.match(r.error,/중지/);}});
+test('repeat prepare shares the serial queue with legacy start',async()=>{const w=worker({}, {repeatEngine:repeatStub()});const [a,b]=await Promise.all([w.request({action:'repeatPracticePrepare',mode:'repeat'}),w.request('startMacro')]);assert(a.success);assert.equal(b.success,false);assert.match(b.error,/반복 입력/);});
+test('common stop cancels repeat input synchronously before the queue drains',async()=>{const engine=repeatStub(true),w=worker({}, {repeatEngine:engine}),p=w.request('stopMacro');assert.equal(engine.isActive(),false);assert((await p).success);});
+
+test('Stop during queued repeat preparation prevents any late armed session',async()=>{let release,entered;const began=new Promise(r=>entered=r),engine=repeatStub();engine.prepare=async()=>{entered();await new Promise(r=>release=r);engine.lateArmed=true;};engine.stop=async()=>{engine.lateArmed=false;};const w=worker({}, {repeatEngine:engine}),preparing=w.request({action:'repeatPracticePrepare',mode:'repeat'});await began;const stopping=w.request('stopMacro');release();const [a,b]=await Promise.all([preparing,stopping]);assert.equal(a.success,false);assert.match(a.error,/중지/);assert(b.success);assert.equal(engine.lateArmed,false);});

@@ -8,7 +8,7 @@ const urls=['https://tickets.interpark.com/gates/ticket/26014841?bc=61776&pc=210
 const report={createdAt:new Date().toISOString(),fixtureResponses:true,liveBookingInput:false,cases:[]};let context,temporaryProfile;
 (async()=>{
   const extension=path.resolve(__dirname,'.extension-under-test');fs.mkdirSync(extension,{recursive:true});
-  for(const file of ['background.js','shared.js','capture.js','analyze.js','cdp.js','content.js','popup.html','popup.js','popup.css'])fs.copyFileSync(path.resolve(__dirname,'..',file),path.join(extension,file));
+  for(const file of ['background.js','shared.js','capture.js','analyze.js','cdp.js','content.js','popup.html','popup.js','popup.css',...require('../scripts/runtime-files.cjs').filter(f=>f.startsWith('repeat-'))])fs.copyFileSync(path.resolve(__dirname,'..',file),path.join(extension,file));
   const manifest=JSON.parse(fs.readFileSync(path.resolve(__dirname,'../manifest.json'),'utf8'));report.version=manifest.version;
   manifest.host_permissions=['https://tickets.interpark.com/*'];fs.writeFileSync(path.join(extension,'manifest.json'),JSON.stringify(manifest));
   temporaryProfile=createTemporaryProfile('nol-tabs');

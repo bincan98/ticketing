@@ -1,0 +1,17 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict'),{summarize}=require('../repeat-results.js');
+const timing={observationStartedAt:10,initiallyVisible:true,initiallyEnabled:false,appearanceAt:null,activationAt:100,firstValidInputAt:101.5};
+const data={completionEvent:'click',validInputs:1,extraValidInputs:0,validClicks:1,extraClicks:0,presses:200000,timing};
+const full=extra=>summarize({siteId:'nol',countsComplete:true,result:{...data,...extra}});
+test('seconds and milliseconds use the same document clock',()=>{const r=full();assert.equal(r.activation.ms,1.5);assert.equal(r.activation.seconds,.0015);assert.match(r.activation.text,/0\.0015초 \(1\.5ms\)/);assert.equal(r.appearance.status,'already-visible');});
+test('disabled input attempts are not duplicate valid clicks',()=>{const r=full();assert.equal(r.duplicateStatus,'none-observed');assert.equal(r.validInputCount,1);assert.equal(r.additionalValidInputs,0);assert.match(r.lines.join('\n'),/200,000회/);});
+test('additional valid input is reported',()=>{const r=full({validInputs:3,extraValidInputs:2,validClicks:3});assert.equal(r.duplicateStatus,'observed');assert.equal(r.additionalValidInputs,2);});
+test('already active has no invented activation delay',()=>{const r=full({timing:{...timing,initiallyEnabled:true,activationAt:null}});assert.equal(r.activation.status,'already-active');assert.equal(r.activation.ms,null);});
+test('new button appearance and activation can both be measured',()=>{const r=full({timing:{...timing,appearanceAt:99,appearanceKind:'replacement'}});assert.equal(r.appearance.ms,2.5);assert.equal(r.activation.ms,1.5);});
+test('partial zero duplicates is unknown, not none',()=>{const r=summarize({siteId:'nol',countsComplete:false,inputEvidence:data,observedPresses:10});assert.equal(r.activation.ms,1.5);assert.equal(r.complete,false);assert.equal(r.duplicateStatus,'unconfirmed');assert.match(r.lines.join('\n'),/최소 1회/);});
+test('partial positive duplicate evidence stays positive',()=>{const r=summarize({countsComplete:false,inputEvidence:{...data,extraValidInputs:1}});assert.equal(r.duplicateStatus,'observed');assert.match(r.lines.join('\n'),/이상 \(부분 기록\)/);});
+test('no result does not become zero events',()=>{const r=summarize({status:'interrupted'});assert.equal(r.validInputCount,null);assert.equal(r.activation.ms,null);assert.equal(r.duplicateStatus,'unconfirmed');});
+test('no valid input has no response time',()=>{const r=full({validInputs:0,extraValidInputs:0,validClicks:0,timing:{...timing,firstValidInputAt:null}});assert.equal(r.activation.status,'no-input');assert.equal(r.activation.ms,null);});
+test('observation after input is not a negative delay',()=>{const r=full({timing:{...timing,activationAt:102}});assert.equal(r.activation.status,'unavailable');assert.equal(r.activation.ms,null);});
+test('Claude uses valid pointerdown and distinguishes click count',()=>{const r=full({completionEvent:'pointerdown',validClicks:0});assert.equal(r.completionEvent,'pointerdown');assert.match(r.lines.join('\n'),/유효 눌림\(pointerdown\): 1회/);assert.match(r.lines.join('\n'),/실제 click 이벤트: 0회/);});
+test('missing Claude document keeps its input basis without a final report',()=>{const r=summarize({site:{id:'claude',event:'pointerdown'},countsComplete:false});assert.equal(r.completionEvent,'pointerdown');assert.equal(r.duplicateStatus,'unconfirmed');});

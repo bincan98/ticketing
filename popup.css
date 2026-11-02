@@ -29,6 +29,8 @@ button:hover { filter: brightness(.97); } button:disabled { opacity: .5; cursor:
 .log-entry { padding: 4px 0; border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
 .log-time { color: #777; } .log-success { color: #3d6e3f; } .log-error { color: #6f322c; } .log-warning { color: #9c6c00; } .log-info { color: #1565c0; }
 #performance { font-size: 12px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+.repeat-count { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+#repeatSummary { white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; background: white; border-radius: 6px; font: 12px/1.6 system-ui; }
 
 .analysis-section { border: 1px solid #d2d2d7; background: white; border-radius: 8px; padding: 10px; margin: 12px 0; }
 #analysisUrl, #analysisFrames, #analysisNotes, #analysisButtons .hint { overflow-wrap: anywhere; white-space: pre-wrap; }

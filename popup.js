@@ -50,16 +50,17 @@ function statusType(run) {
   return !run || C.isActive(run) || ['handoff','stopped'].includes(run.status) ? 'info' : ['completed','tested'].includes(run.status) ? 'success' : 'error';
 }
 function updateButtonState() {
-  const running = C.isActive(run);
+  const running = C.isActive(run)||!!globalThis.TicketModeUI?.active(),modeBusy=!!globalThis.TicketModeUI?.busy;
   $('analyzePage').disabled = running || busy;
   $('copyAnalysis').disabled = busy || !pageAnalysis;
-  $('start').disabled = running || busy; $('stop').disabled = !running;
-  $('configuration').disabled = running || busy;
-  $('advancedConfiguration').disabled = running || busy;
+  $('start').disabled = running || busy || modeBusy; $('stop').disabled = !running;
+  $('executionMode').disabled = running || busy || modeBusy;
+  $('configuration').disabled = running || busy || modeBusy;
+  $('advancedConfiguration').disabled = running || busy || modeBusy;
   $('captureTab').disabled = busy;
   $('captureTab').textContent = running ? '감시 중지 후 현재 탭 가져오기' : '현재 탭에서 URL·예매 버튼 가져오기';
   $('clearLog').disabled = running || busy;
-  $('start').textContent = '실제 클릭 시작 ▶';
+  $('start').textContent = globalThis.TicketModeUI?.mode==='repeat'?'반복 입력 준비 ▶':'실제 클릭 시작 ▶';
 }
 async function action(fn, channel = 'status') {
   busy = true; updateButtonState();
@@ -302,6 +303,7 @@ async function startPrepared(prepared) {
   showStatus(run?.message || '실행 시작',statusType(run));
 }
 function startWithPreparation() {
+  if(globalThis.TicketModeUI?.mode==='repeat')return TicketModeUI.prepare();
   if (busy || C.isActive(run)) return;
   let granted;
   try {
@@ -381,6 +383,7 @@ $('applyCapture').addEventListener('click', () => action(applyPendingCapture, 'p
 $('start').addEventListener('click', startWithPreparation);
 $('save').addEventListener('click', saveSettings);
 $('stop').addEventListener('click', () => action(async () => {
+  if(globalThis.TicketModeUI?.mode==='repeat'){await TicketModeUI.stop();return;}
   await message({action: 'stopMacro'}); run = (await message({action: 'getStatus'})).run; showStatus(run?.message || '중지 요청 완료');
 }));
 $('profile').addEventListener('change', selectSite);
@@ -461,6 +464,7 @@ chrome.tabs.onActivated?.addListener(() => {
 action(async () => {
   const data = await message({action: 'getSettings'});
   profiles = data.ticketProfiles; activeId = data.activeProfileId; run = data.run;currentTab=data.currentTab;
+  globalThis.TicketModeUI?.initialize(data,{currentTab:()=>currentTab,profile:()=>profiles.find(p=>p.id===activeId),showStatus,updateButtons:updateButtonState});
   renderTabContext();
   const visible = visibleProfiles();
   if (!visible.some(profile => profile.id === activeId) && visible.length && !C.isActive(run)) {
@@ -469,7 +473,7 @@ action(async () => {
   }
   renderProfiles(); fillProfile(profiles.find(p => p.id === activeId)); loadLogs(data.macroLogs);
   showStatus(run?.message || '준비 완료 · CDP 실제 입력 · 버튼 활성화 최대 2분 감시', statusType(run));
-  if (!C.isActive(run)) {
+  if (!C.isActive(run)&&globalThis.TicketModeUI?.mode!=='repeat'&&!globalThis.TicketModeUI?.active()) {
     await captureWithAccessCheck();
   }
 }, 'preparation');

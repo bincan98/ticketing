@@ -2,7 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),{createHash}=require('node:crypto'),{execFileSync}=require('node:child_process');
 const {zipSync,unzipSync}=require('fflate');
 const {validateRelease}=require('./check-release.cjs');
-const files=['manifest.json','background.js','shared.js','capture.js','analyze.js','cdp.js','content.js','popup.html','popup.js','popup.css'];
+const files=require('./runtime-files.cjs');
 const hash=data=>createHash('sha256').update(data).digest('hex');
 function verifyArchive(data,sources){
   const seen=new Set(),limit=Object.values(sources).reduce((sum,value)=>sum+value.length,0)*2+16384;
